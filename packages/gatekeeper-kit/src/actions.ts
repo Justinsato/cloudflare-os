@@ -22,7 +22,7 @@ export {
   type RetainedActionPage,
 } from "./action-journal";
 
-/** The queue surface staging needs; `gate.actions` and a full stub both satisfy it. */
+/** The queue surface staging needs; a session's own approval-queue stub satisfies it. */
 export type ActionSubmitter = Pick<RpcStub<ApprovalQueue>, "submitAction">;
 
 type ActionLogFields =
@@ -381,7 +381,7 @@ function strandedBy(
  * await this.#creds.run(async (creds, read) => {
  *   const task = await api.draftTask(creds, input);
  *   return declared.bind(journal, api)
- *     .submit(gate.actions, "createTask", task, { fence: read });
+ *     .submit(queue, "createTask", task, { fence: read });
  * });
  * ```
  */

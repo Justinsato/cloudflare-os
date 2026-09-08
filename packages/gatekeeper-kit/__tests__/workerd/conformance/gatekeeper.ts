@@ -8,7 +8,11 @@
  */
 
 import { DurableObject, RpcStub, RpcTarget, WorkerEntrypoint } from "cloudflare:workers";
-import type { ActionDescription, ObservationDescription } from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  ActionDescription,
+  GitCache,
+  ObservationDescription,
+} from "@gadgets/workshop-shared/gatekeeper";
 import {
   ActionOutcomeUnknownError,
   ActionJournal,
@@ -64,9 +68,7 @@ export function resetProvider(): void {
   advertised.length = 0;
 }
 
-/** The slice of `GitCache` this consumer touches. */
-type GitCacheStub = { advertiseCommit(oid: string): Promise<void> };
-
+/** Deliberately partial: this consumer only advertises commits. */
 class FixtureGitCache extends RpcTarget {
   async advertiseCommit(oid: string): Promise<void> {
     advertised.push(oid);
@@ -88,8 +90,8 @@ export class FixtureQueue extends RpcTarget {
   }
 
   /** The git cache a gatekeeper returning commit ids must advertise through. */
-  async getGitCache(): Promise<GitCacheStub> {
-    return new FixtureGitCache();
+  async getGitCache(): Promise<GitCache> {
+    return new FixtureGitCache() as unknown as GitCache;
   }
 }
 
@@ -319,6 +321,7 @@ export class ConformanceResource extends DurableObject {
   };
 
   #gate?: ObservationGate;
+  #queue?: RpcStub<FixtureQueue>;
   #reconnectMidApply = false;
 
   /**
@@ -327,8 +330,13 @@ export class ConformanceResource extends DurableObject {
    */
   bind(account: DurableObjectStub<ConformanceAccount>): void {
     this.#account = account;
-    // The gate owns this stub for the resource's lifetime, as a session's `queue.dup()` would.
-    this.#gate = new ObservationGate(new RpcStub(new FixtureQueue()) as never, this.#observers);
+    // Two owners, as a session has: its own queue for staging actions, and a gate over a dup of
+    // it. Rebinding releases the pair the previous bind made; leases outlive it.
+    this.#gate?.[Symbol.dispose]();
+    this.#queue?.[Symbol.dispose]();
+    const queue = new RpcStub(new FixtureQueue());
+    this.#queue = queue;
+    this.#gate = new ObservationGate(queue.dup(), this.#observers);
   }
 
   #requireAccount(): DurableObjectStub<ConformanceAccount> {
@@ -347,6 +355,11 @@ export class ConformanceResource extends DurableObject {
   #requireGate(): ObservationGate {
     if (!this.#gate) throw new Error("resource is not bound");
     return this.#gate;
+  }
+
+  #requireQueue(): RpcStub<FixtureQueue> {
+    if (!this.#queue) throw new Error("resource is not bound");
+    return this.#queue;
   }
 
   /**
@@ -492,7 +505,7 @@ export class ConformanceResource extends DurableObject {
     // Staged inside a credentialed operation, so the fence is that operation's own read rather
     // than a second one a reconnect could land in front of.
     return this.#creds.run((_creds, read) => actions.bind(this.#journal, this.#host)
-      .submit(this.#requireGate().actions, kind, payload, { fence: read }));
+      .submit(this.#requireQueue(), kind, payload, { fence: read }));
   }
 
   /**

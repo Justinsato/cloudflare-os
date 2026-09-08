@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ApprovalQueue, GatekeeperUserVerifier } from "@gadgets/workshop-shared/gatekeeper";
+import type {
+  GatekeeperUserVerifier,
+  ObservationAuthorizer,
+} from "@gadgets/workshop-shared/gatekeeper";
 import type { RpcStub } from "cloudflare:workers";
 import {
   aclObservers,
@@ -51,9 +54,9 @@ async function observe(instance: ObserverTracker<V>, sets: string[]) {
   return check.excludeObservers;
 }
 
-// Approval queue fake that records authorization requests.
+// Observation authorizer fake that records authorization requests.
 function fakeQueue(authorizeObservation = vi.fn(async () => {})) {
-  return { authorizeObservation } as unknown as RpcStub<ApprovalQueue>;
+  return { authorizeObservation } as unknown as RpcStub<ObservationAuthorizer>;
 }
 
 // The mark the overseer carries on a policy refusal. No kernel error class exists yet, so the
@@ -753,19 +756,10 @@ describe("ObservationGate", () => {
   it("releases the queue dup it was handed", () => {
     const dispose = vi.fn();
     const queue = { authorizeObservation: async () => {}, [Symbol.dispose]: dispose } as unknown as
-      RpcStub<ApprovalQueue>;
+      RpcStub<ObservationAuthorizer>;
 
     new ObservationGate(queue, openObservers())[Symbol.dispose]();
     expect(dispose).toHaveBeenCalledOnce();
-  });
-
-  it("shares its stub so a session staging actions needs no second dup", () => {
-    const queue = { authorizeObservation: async () => {} } as unknown as RpcStub<ApprovalQueue>;
-    const gate = new ObservationGate(queue, openObservers());
-
-    // The same reference, not a dup: ownership (and release) stays with the gate. The type is
-    // narrowed to actions only, so observations cannot skip the strategy's exclusions.
-    expect(gate.actions).toBe(queue);
   });
 
   it("discards rather than commits when the overseer refuses, keeping its error", async () => {
@@ -1082,17 +1076,15 @@ describe("ObservationGate", () => {
     });
   });
 
-  it("reaches the git cache through the gate, without exposing raw authorization", async () => {
+  it("reaches the git cache through the gate", async () => {
     // A gatekeeper returning commit ids must advertise them. Without this it would have to keep a
     // raw queue stub, which is the bypass the gate exists to prevent.
     const cache = { advertiseCommit: vi.fn() };
     const getGitCache = vi.fn(async () => cache);
     const gate = new ObservationGate(
-      { getGitCache } as unknown as RpcStub<ApprovalQueue>, openObservers());
+      { getGitCache } as unknown as RpcStub<ObservationAuthorizer>, openObservers());
 
     expect(await gate.getGitCache()).toBe(cache);
     expect(getGitCache).toHaveBeenCalledOnce();
-    // The action surface still hides it: observations may only go through `authorize()`.
-    expect((gate.actions as Record<string, unknown>).authorizeObservation).toBeUndefined();
   });
 });

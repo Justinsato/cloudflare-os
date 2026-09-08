@@ -104,6 +104,12 @@ Omit `adjudicateRejection`'s `refresh` callback when rejection of a current cred
 whole grant is dead. A heal cannot recover that provider model and would suppress the expiry
 notification.
 
+A provider-confirmed death is recorded against the grant's identity fence, so every later read —
+in this facet or any other over the same storage — refuses it until a reconnect replaces it, even
+while its access token is still inside its own expiry window. The grant itself stays stored, so
+account-owned revoke keeps its material and a failed expiry notification can still be retried by
+a later read.
+
 Every credential replacement re-arms the expiry latch. This includes `connect()`, successful
 refresh, and rejection healing. A legacy-layout migration does not re-arm it because it replaces no
 credentials. `clearCredentialExpiryLatch` remains available for accounts that manage credentials
@@ -367,15 +373,23 @@ strategy's derived `excludeObservers` never reaches the overseer, so owner-only 
 admitted collaborator. Authorizing after the fetch is what makes the description name the bytes
 actually disclosed; authorizing before it would describe a read that may still fail.
 
-`ObservationGate` is also the only path to `authorizeObservation` and the only holder of the queue
-stub a session stages actions through (`gate.actions`). It owns that `.dup()`, so the session must
-forward disposal to it or leak one stub per session:
+`ObservationGate` is the only path to `authorizeObservation`. It takes a duplicate of the stub it
+guards and owns that dup, so a session holds two owners — its own approval queue for staging
+actions, and the gate over `queue.dup()` — and releases both when the session ends:
 
 ```ts
+#queue = queue;
+#gate = new ObservationGate(queue.dup(), this.#observers);
+
 [Symbol.dispose]() {
   this.#gate[Symbol.dispose]();
+  this.#queue[Symbol.dispose]();
 }
 ```
+
+The gate only needs `ObservationAuthorizer`, the read-only capability, so a catalog or
+slash-command handler — which receives exactly that — constructs one from its own
+`authorizer.dup()`. Gate leases (`lease()`) are independent owners in the same way.
 
 Every gatekeeper must implement the three observer methods, and `GatekeeperUser.getVerifier()`
 alongside them — that capability is what `aclObservers` and `trackedCollectionObservers` call to check a

@@ -2,8 +2,8 @@
 
 import type { RpcStub } from "cloudflare:workers";
 import type {
-  ApprovalQueue,
   GatekeeperUserVerifier,
+  ObservationAuthorizer,
   ObservationDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
 import {
@@ -217,9 +217,6 @@ export type ObservationScope =
 /** Observation text completed by the gate with derived exclusions. */
 export type ObservationInput = Omit<ObservationDescription, "excludeObservers">;
 
-/** The queue surface a session stages actions through; observations go only through the gate. */
-export type ActionQueue = Pick<RpcStub<ApprovalQueue>, "submitAction" | "bindHook">;
-
 /**
  * Authorizes observations after applying the selected observer strategy.
  *
@@ -238,50 +235,41 @@ export type ActionQueue = Pick<RpcStub<ApprovalQueue>, "submitAction" | "bindHoo
  * ```
  */
 export class ObservationGate implements Disposable {
-  readonly #queue: RpcStub<ApprovalQueue>;
+  readonly #queue: RpcStub<ObservationAuthorizer>;
   readonly #strategy: ObserverStrategy;
 
   /**
    * Creates an observation gate.
-   * @param queue Duplicated approval-queue stub owned by the gate.
+   * @param queue Duplicated authorizer stub owned by the gate. A session that also stages actions
+   * keeps its own approval-queue stub; this one is the read-only surface.
    * @param strategy Observer strategy for this binding.
    */
-  constructor(queue: RpcStub<ApprovalQueue>, strategy: ObserverStrategy) {
+  constructor(queue: RpcStub<ObservationAuthorizer>, strategy: ObserverStrategy) {
     this.#queue = queue;
     this.#strategy = strategy;
   }
 
   /**
-   * Shares the gate's stub for staging actions, so a session holds one dup for observations and
-   * actions alike. Narrowed to the action surface: a raw `authorizeObservation` would skip the
-   * strategy's exclusions, so observations go only through `authorize()`.
-   * @returns The action surface of the queue, borrowed: the gate keeps ownership, never dispose it.
-   */
-  get actions(): ActionQueue {
-    return this.#queue;
-  }
-
-  /**
    * Reaches the workspace git cache through the gate, so a gatekeeper whose API returns commit ids
-   * can advertise them without holding a raw queue stub of its own. Observations still go only
+   * can advertise them without holding a stub of its own. Observations still go only
    * through `authorize()`.
    *
    * The returned stub is **caller-owned**: dispose it when the read is done, or take it with
-   * `using`. The gate keeps its own queue stub either way. The promise pipelines, so a call on it
-   * need not be awaited first. The return type is the queue's own, so the stub stays `Disposable`
-   * rather than being flattened to a bare `GitCache` that `using` would reject.
+   * `using`. The gate keeps its own authorizer stub either way. The promise pipelines, so a call
+   * on it need not be awaited first. The return type is the authorizer's own, so the stub stays
+   * `Disposable` rather than being flattened to a bare `GitCache` that `using` would reject.
    * @returns The gatekeeper-scoped git cache.
    */
-  getGitCache(): ReturnType<RpcStub<ApprovalQueue>["getGitCache"]> {
+  getGitCache(): ReturnType<RpcStub<ObservationAuthorizer>["getGitCache"]> {
     return this.#queue.getGitCache();
   }
 
   /**
-   * Opens a second gate over its own duplicate of the queue, for a capability that outlives the
-   * session that made it — a cursor handed to the gadget and walked later, most often.
+   * Opens a second gate over its own duplicate of the authorizer, for a capability that outlives
+   * the session that made it — a cursor handed to the gadget and walked later, most often.
    *
    * Both gates share this binding's strategy, so exclusions and fences stay one decision; only the
-   * queue stub is duplicated. The lease is **caller-owned**: release it when the capability it
+   * stub is duplicated. The lease is **caller-owned**: release it when the capability it
    * serves is released, typically from a cursor's `dispose`. Disposing the session gate does not
    * disturb a lease, and disposing a lease does not disturb the session.
    * @returns A gate the caller disposes independently.
@@ -291,7 +279,7 @@ export class ObservationGate implements Disposable {
   }
 
   /**
-   * Releases the duplicated approval-queue stub. Disposing during isolate shutdown trips a fatal
+   * Releases the duplicated authorizer stub. Disposing during isolate shutdown trips a fatal
    * workerd assertion; shipped gatekeepers leave the release to RPC connection teardown.
    */
   [Symbol.dispose](): void {

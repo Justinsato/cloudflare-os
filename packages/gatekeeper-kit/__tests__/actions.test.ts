@@ -18,7 +18,6 @@ import {
   type TaggedAction,
 } from "../src/actions";
 import type { CredentialRead } from "../src/credentials";
-import { ObservationGate, openObservers } from "../src/observers";
 import { fakeKv } from "./fake-kv";
 
 function makeKv() {
@@ -695,21 +694,6 @@ describe("defineActions", () => {
       actionKind: { tag: "sql", label: "Run SQL" },
       autoApprovable: true,
     });
-    expect(journal.listPending()).toEqual([
-      { id, action: { kind: "execute", payload: { sql: "one" } } },
-    ]);
-  });
-
-  it("stages through the gate's borrowed action surface", async () => {
-    // The one-dup session shape: `gate.actions` must satisfy `ActionSubmitter` without a cast.
-    const { actions, journal } = bind();
-    const submitAction = submitSpy();
-    const gate = new ObservationGate(
-      { submitAction } as unknown as RpcStub<ApprovalQueue>, openObservers());
-
-    const id = await actions.submit(gate.actions, "execute", { sql: "one" });
-
-    expect(submitAction).toHaveBeenCalledWith(id, expect.objectContaining(presentation));
     expect(journal.listPending()).toEqual([
       { id, action: { kind: "execute", payload: { sql: "one" } } },
     ]);

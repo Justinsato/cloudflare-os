@@ -298,6 +298,55 @@ describe("assembly", () => {
       .toEqual(["project-a", "project-c"]);
   });
 
+  it("stops a warm facet reading a grant another facet's rejection buried", async () => {
+    const { account, resource } = bind();
+    const other = env.CONFORMANCE_RESOURCE.getByName(`resource-${seq}-b`);
+    await connect(account);
+    await resource.bind(account);
+    await other.bind(account);
+
+    // The second facet vouches for the grant and warms its cache under it.
+    expect((await other.searchProjects("Alpha")).map(project => project.id)).toEqual(["project-a"]);
+
+    provider.controls.grantDead = true;
+    provider.controls.rejectCredentials = true;
+    await expect(async () => { await resource.searchProjects("Alpha"); })
+      .rejects.toThrow(/Reconnect the conformance account/);
+
+    // The account recorded the death, so the warm facet must refuse rather than serve its hit --
+    // nothing about the grant's own hour-long expiry says it is dead.
+    await expect(async () => { await other.searchProjects("Alpha"); })
+      .rejects.toThrow(/credentials have expired/);
+
+    provider.controls.grantDead = false;
+    provider.controls.rejectCredentials = false;
+    await account.disconnect();
+    await connect(account);
+
+    expect((await other.searchProjects("Alpha")).map(project => project.id)).toEqual(["project-a"]);
+  });
+
+  it("keeps a cursor's lease walking after its resource rebinds", async () => {
+    const { account, resource } = bind();
+    for (const index of [1, 2, 3]) {
+      provider.projects.set(`extra-${index}`,
+        { id: `extra-${index}`, name: `Extra ${index}`, spaceId: "space-1" });
+    }
+    await connect(account);
+    await resource.bind(account);
+
+    using cursor = await resource.listProjects();
+    expect(await cursor.next()).not.toBeNull();
+    const authorized = observations.length;
+
+    // Rebinding releases the queue and gate the previous bind made; the cursor's lease owns its
+    // own dup and must outlive both.
+    await resource.bind(account);
+
+    expect(await cursor.next()).not.toBeNull();
+    expect(observations).toHaveLength(authorized + 1);
+  });
+
   it("refreshes and retries a read whose stored access token the provider has rotated", async () => {
     const { account, resource } = bind();
     await connect(account);
