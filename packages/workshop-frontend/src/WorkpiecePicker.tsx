@@ -8,6 +8,7 @@ import type { GadgetSummary, WorkpieceId, WorktreeSummary } from '@gadgets/works
 import { CountBadge } from './components/CountBadge'
 import { WorkshopIconButton, WorkshopInput } from './components/WorkshopControls'
 import { isImeComposing } from './keyboardEvent'
+import { useGadgetReorder, type GadgetMove } from './gadgetReorder'
 
 export const WORKPIECE_RAIL_COLLAPSED_WIDTH = 48
 export const WORKPIECE_RAIL_EXPANDED_WIDTH = 220
@@ -28,6 +29,8 @@ interface WorkpiecePickerProps {
   onExpandedChange: (expanded: boolean) => void
   onSelect: (id: WorkpieceId) => void
   onRename: (id: WorkpieceId, title: string) => void
+  // Drag (or Alt+Up/Down) to reorder gadgets. Absent when the viewer can't reorder.
+  onMoveGadget?: (move: GadgetMove) => void
   pendingActivityCount: number
   onOpenActivity: () => void
 }
@@ -42,10 +45,13 @@ export default function WorkpiecePicker({
   onExpandedChange,
   onSelect,
   onRename,
+  onMoveGadget,
   pendingActivityCount,
   onOpenActivity,
 }: WorkpiecePickerProps) {
   const [editing, setEditing] = useState<{ id: WorkpieceId; value: string } | null>(null)
+  const reorder = useGadgetReorder(
+    gadgets.map(g => g.id), editing ? undefined : onMoveGadget, 'y')
 
   const commitRename = () => {
     if (!editing) return
@@ -124,13 +130,15 @@ export default function WorkpiecePicker({
           return (
             <div
               key={gadget.id}
+              {...reorder.itemProps(gadget.id)}
+              style={reorder.dropIndicatorStyle(gadget.id)}
               className={`group/workpiece flex items-center rounded-lg text-[13px] leading-[18px] tracking-[-0.25px] transition-colors ${
                 expanded ? 'h-8 gap-1 pl-2 pr-1' : 'h-9 w-9 justify-center self-center'
               } ${
                 isSelected
                   ? 'bg-kumo-fill font-medium text-kumo-strong'
                   : 'text-kumo-default hover:bg-kumo-tint'
-              }`}
+              } ${reorder.draggingId === gadget.id ? 'opacity-50' : ''}`}
             >
               <Tooltip content={`${gadget.title}${!expanded && isPending ? ' (Draft)' : ''}${hasHook ? ' · Hooks enabled' : ''}`} asChild>
                 <button

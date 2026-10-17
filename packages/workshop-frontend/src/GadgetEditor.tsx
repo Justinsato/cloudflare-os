@@ -16,6 +16,8 @@ import {
   type Icon,
 } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget } from 'capnweb'
+import { sortByGadgetOrder } from '@gadgets/workshop-shared/gadget-order'
+import { applyGadgetMove, useGadgetReorder, type GadgetMove } from './gadgetReorder'
 import { useAuthenticatedApi } from './AuthContext'
 import { useConnectionLost, useRpcStub } from './RpcContext'
 import UserMenu from './components/UserMenu'
@@ -243,13 +245,20 @@ function PaneWorkpieceTabs({
   gadgets,
   activeId,
   onSelect,
+  onMoveGadget,
 }: {
   gadgets: WorkpieceSummary[]
   activeId: WorkpieceId | null
   onSelect: (id: WorkpieceId) => void
+  // Absent when the viewer can't reorder; gadget tabs then aren't draggable.
+  onMoveGadget?: (move: GadgetMove) => void
 }) {
   const scrollerRef = useRef<HTMLDivElement>(null)
   const activeRef = useRef<HTMLButtonElement>(null)
+  // Only gadget tabs reorder; a chat's worktrees stay after them.
+  const gadgetIds = useMemo(
+    () => gadgets.filter(g => g.type === 'gadget').map(g => g.id), [gadgets])
+  const reorder = useGadgetReorder(gadgetIds, onMoveGadget, 'x')
 
   // Whatever is open must be fully readable; the rest may sit off-scroll. Once per selection
   // change isn't enough, because the layout keeps moving afterwards: the pane animates its width,
@@ -300,12 +309,14 @@ function PaneWorkpieceTabs({
             onClick={() => onSelect(gadget.id)}
             title={gadget.title}
             aria-current={active ? 'page' : undefined}
+            {...reorder.itemProps(gadget.id)}
+            style={reorder.dropIndicatorStyle(gadget.id)}
             // The open one gets room for its whole name; the others yield first.
             className={`inline-flex flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium tracking-[-0.15px] transition-colors duration-150 ${
               active
                 ? 'max-w-[240px] bg-kumo-tint text-kumo-default'
                 : 'max-w-[150px] text-kumo-subtle hover:bg-kumo-tint/50 hover:text-kumo-default'
-            }`}
+            } ${reorder.draggingId === gadget.id ? 'opacity-50' : ''}`}
           >
             <WorkpieceGlyph summary={gadget} className="flex-shrink-0" />
             <span className="truncate">{gadget.title}</span>
@@ -681,11 +692,20 @@ export default function GadgetEditor() {
   // with only code to show; they ride alongside as pending gadgets do, and never affect the
   // workspace's layout mode: a second chat shares nothing with the first until an accepted gadget
   // exists.
+  //
+  // Gadgets follow the workspace's saved order (shared by every viewer), with gadgets it doesn't
+  // name after it in id order. A reorder shows at once from `pendingGadgetOrder` and is dropped
+  // once the saved order changes (the save echoing back through the metadata subscription).
+  const savedGadgetOrder = metadata?.gadgetOrder
+  const savedGadgetOrderKey = savedGadgetOrder?.join(',') ?? ''
+  const [pendingGadgetOrder, setPendingGadgetOrder] = useState<WorkpieceId[] | null>(null)
+  useEffect(() => { setPendingGadgetOrder(null) }, [savedGadgetOrderKey])
+  const gadgetOrder = pendingGadgetOrder ?? savedGadgetOrder
   const allGadgets = useMemo(() => {
-    return [...workpieces.values()]
-      .filter((w): w is GadgetSummary => w.type === 'gadget')
-      .toSorted((a, b) => a.id - b.id)
-  }, [workpieces])
+    return sortByGadgetOrder(
+      [...workpieces.values()].filter((w): w is GadgetSummary => w.type === 'gadget'),
+      gadgetOrder)
+  }, [workpieces, gadgetOrder])
   const allWorktrees = useMemo(() => {
     return [...workpieces.values()]
       .filter((w): w is WorktreeSummary => w.type === 'worktree')
@@ -1375,6 +1395,21 @@ export default function GadgetEditor() {
     }
   }, [overseer, toasts])
 
+  // Reordering is for the build role; "use" collaborators see the saved order only (and the
+  // backend refuses setGadgetOrder from them regardless).
+  const canReorderGadgets = !!overseer && !isUseOnly
+  const handleMoveGadget = useCallback(async (move: GadgetMove) => {
+    if (!overseer) return
+    const next = applyGadgetMove(allGadgets.map(g => g.id), move)
+    setPendingGadgetOrder(next)
+    try {
+      await overseer.stub.setGadgetOrder(next)
+    } catch {
+      setPendingGadgetOrder(null)
+      toasts.add({ title: 'Failed to reorder gadgets', variant: 'error' })
+    }
+  }, [overseer, allGadgets, toasts])
+
   // ── console log subscription ──────────────────────────────────────────────────
   useEffect(() => {
     if (!overseer) return
@@ -1947,6 +1982,7 @@ export default function GadgetEditor() {
                   gadgets={visibleWorkpieces}
                   activeId={selectedWorkpieceId}
                   onSelect={handleSelectWorkpiece}
+                  onMoveGadget={canReorderGadgets ? handleMoveGadget : undefined}
                 />
               ) : selectedWorkpieceSummary && (
                 <PaneLabel
@@ -2141,6 +2177,7 @@ export default function GadgetEditor() {
               onExpandedChange={handleWorkpieceRailExpandedChange}
               onSelect={handleSelectWorkpiece}
               onRename={handleRenameWorkpiece}
+              onMoveGadget={canReorderGadgets ? handleMoveGadget : undefined}
               pendingActivityCount={pendingActionCount}
               onOpenActivity={() => openActivity(pendingActionCount > 0 ? 'review' : 'history')}
             />

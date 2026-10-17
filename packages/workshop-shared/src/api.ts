@@ -2056,6 +2056,14 @@ export type GadgetMetadata = {
    */
   defaultGadgetId?: WorkpieceId;
 
+  /**
+   * The saved display order of the workspace's gadgets (tab strip, Outputs rail, pickers), shared
+   * by every viewer. Gadgets it doesn't name sort after it in id order; ids it names that no
+   * longer exist are ignored (see sortByGadgetOrder in `@gadgets/workshop-shared/gadget-order`).
+   * Absent or empty means id order. Set with Overseer.setGadgetOrder().
+   */
+  gadgetOrder?: WorkpieceId[];
+
   // TODO:
   // - created / modified / activity times
   // - icon? thumbnail?
@@ -2462,6 +2470,13 @@ export interface Overseer extends RpcTarget {
 
   /** Change the workspace title. */
   setTitle(title: string): Promise<void>;
+
+  /**
+   * Save the display order of the workspace's gadgets (see GadgetMetadata.gadgetOrder). Unknown
+   * and duplicate ids are dropped, and existing gadgets the list leaves out are appended in id
+   * order. Requires the "build" role.
+   */
+  setGadgetOrder(order: WorkpieceId[]): Promise<void>;
 
   /**
    * Instruct the workspace to delete itself, removing it from the User's workspace list and
