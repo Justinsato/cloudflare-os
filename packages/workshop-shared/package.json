@@ -31,6 +31,10 @@
       "types": "./src/code-change.ts",
       "import": "./src/code-change.ts"
     },
+    "./gadget-order": {
+      "types": "./src/gadget-order.ts",
+      "import": "./src/gadget-order.ts"
+    },
     "./theme": {
       "types": "./src/theme.ts",
       "import": "./src/theme.ts"

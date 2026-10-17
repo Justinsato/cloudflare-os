@@ -1176,6 +1176,12 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // `defaultGadgetId` can be cached in memory after it is first read.
       defaultGadgetId: <WorkpieceId | undefined>undefined,
 
+      // Saved display order of gadget workpieces (GadgetMetadata.gadgetOrder), written by
+      // setGadgetOrder() and pruned when a gadget is removed. Readers must tolerate stale or
+      // missing ids: gadgets created since the last save aren't in it and sort after it by id.
+      // Added without a version bump: a missing key reads as the empty default (id order).
+      gadgetOrder: <WorkpieceId[]>[],
+
       // External-message Gadgets claim ownership before registering in the owner's UserDO. If that
       // registration fails, this keeps the owner-table write retryable.
       ownerRegistrationPending: false,

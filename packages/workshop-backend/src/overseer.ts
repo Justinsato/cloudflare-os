@@ -80,6 +80,7 @@ import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
 import { isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
+import { normalizeGadgetOrder } from "@gadgets/workshop-shared/gadget-order";
 import {
   assertChatAttachmentSupportedByProvider,
   isAllowedChatAttachmentImageMimeType,
@@ -1600,6 +1601,15 @@ class OverseerImpl implements AgentHooks {
   // related histories. (Chat docs may still hold content in the gadget's files root, and chats
   // may still pin the gadget; the pins stay because the chat's rows still fold on them. Both are
   // inert because the registry entry -- the enumeration source of truth -- is gone.)
+  // Save the gadget display order (GadgetMetadata.gadgetOrder), normalized against the gadgets
+  // that exist now so the stored list never names a deleted id or repeats one.
+  setGadgetOrder(order: WorkpieceId[]): void {
+    let existing = [...this.storage.gadgets.list()]
+        .filter(w => w.type === "gadget")
+        .map(w => w.id);
+    this.storage.gadgetOrder.put(normalizeGadgetOrder(order, existing));
+  }
+
   async removeWorkpiece(id: WorkpieceId): Promise<void> {
     let record = this.storage.gadgets.get(id);
     if (!record) {
@@ -1620,6 +1630,8 @@ class OverseerImpl implements AgentHooks {
         .filter(meta => this.proposedChangeWorkpieceIds(meta.id, meta).includes(id));
     let facetName = this.gadgetFacetName(id);
     this.storage.gadgets.delete(id);  // notifies workpiece subscribers
+    let order = this.storage.gadgetOrder.get();
+    if (order.includes(id)) this.storage.gadgetOrder.put(order.filter(o => o !== id));
     this.#runningChatIds.delete(id);
     this.ctx.facets.delete(facetName);
     for (let meta of proposingChats) this.storage.chatMeta.put(meta);
@@ -10409,6 +10421,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
+      gadgetOrder: this.impl.storage.gadgetOrder.get(),
     };
     if (!this.isOwner) {
       result.owner = await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger);
@@ -10434,6 +10447,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       ownerInvitesOnly: this.impl.storage.ownerInvitesOnly.get(),
       role: "build",
       defaultGadgetId: this.impl.defaultGadgetId,
+      gadgetOrder: this.impl.storage.gadgetOrder.get(),
     };
     if (owner) metadata.owner = owner;
 
@@ -10461,12 +10475,19 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
         callback(metadata).catch(unsubscribe);
       }
     };
+    let gadgetOrderSubscriber = {
+      update(value: WorkpieceId[]) {
+        metadata.gadgetOrder = value;
+        callback(metadata).catch(unsubscribe);
+      }
+    };
 
     let unsubscribe = () => {
       this.impl.storage.title.unsubscribe(titleSubscriber);
       this.impl.storage.totalCost.unsubscribe(costSubscriber);
       this.impl.storage.containsRestrictedData.unsubscribe(restrictedDataSubscriber);
       this.impl.storage.ownerInvitesOnly.unsubscribe(ownerInvitesOnlySubscriber);
+      this.impl.storage.gadgetOrder.unsubscribe(gadgetOrderSubscriber);
       callback[Symbol.dispose]();
     };
 
@@ -10474,6 +10495,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.storage.totalCost.subscribe(costSubscriber);
     this.impl.storage.containsRestrictedData.subscribe(restrictedDataSubscriber);
     this.impl.storage.ownerInvitesOnly.subscribe(ownerInvitesOnlySubscriber);
+    this.impl.storage.gadgetOrder.subscribe(gadgetOrderSubscriber);
 
     callback(metadata).catch(unsubscribe);
 
@@ -10493,6 +10515,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async setTitle(title: string): Promise<void> {
     this.impl.storage.title.put(title);
     await this.#owner.updateTitle(this.impl.ctx.id.toString(), title);
+  }
+
+  async setGadgetOrder(order: WorkpieceId[]): Promise<void> {
+    this.impl.setGadgetOrder(order);
   }
 
   async subscribeToWorkpieces(subscriber: RpcStub<WorkpiecesSubscriber>): Promise<RpcStub<{}>> {
@@ -12024,6 +12050,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
       owner: await retryOnDoReset(() => this.#owner.whoami(), this.impl.logger),
       role: "use",
       defaultGadgetId: this.impl.defaultGadgetId,
+      gadgetOrder: this.impl.storage.gadgetOrder.get(),
     };
   }
 
@@ -12041,6 +12068,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
       owner,
       role: "use",
       defaultGadgetId: this.impl.defaultGadgetId,
+      gadgetOrder: this.impl.storage.gadgetOrder.get(),
     };
 
     let titleSubscriber = {
@@ -12049,13 +12077,21 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
         callback(metadata).catch(unsubscribe);
       }
     };
+    let gadgetOrderSubscriber = {
+      update(value: WorkpieceId[]) {
+        metadata.gadgetOrder = value;
+        callback(metadata).catch(unsubscribe);
+      }
+    };
 
     let unsubscribe = () => {
       this.impl.storage.title.unsubscribe(titleSubscriber);
+      this.impl.storage.gadgetOrder.unsubscribe(gadgetOrderSubscriber);
       callback[Symbol.dispose]();
     };
 
     this.impl.storage.title.subscribe(titleSubscriber);
+    this.impl.storage.gadgetOrder.subscribe(gadgetOrderSubscriber);
 
     callback(metadata).catch(unsubscribe);
 
@@ -12093,6 +12129,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   // --- Denied methods (build-only) ---
 
   async setTitle(_title: string): Promise<void> { this.#deny(); }
+  async setGadgetOrder(_order: WorkpieceId[]): Promise<void> { this.#deny(); }
   async deleteSelf(): Promise<void> { this.#deny(); }
   async createGadget(_title: string): Promise<RpcStub<GadgetClient>> { this.#deny(); }
   async submitCodeChange(_chatId: number, _submission: CodeChangeSubmission)
