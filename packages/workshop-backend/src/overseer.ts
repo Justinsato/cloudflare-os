@@ -361,6 +361,12 @@ function describeBindingKind(binding: BlueprintBinding): string {
 }
 
 const MAX_BLUEPRINT_SCREENSHOT_BYTES = 1024 * 1024;
+
+// Client calls into gadget facets allowed in flight at once, below the runtime's 10-per-request
+// dynamic worker limit, and how long a call queues before running anyway. See
+// #acquireGadgetCallSlot.
+const GADGET_CALL_LIMIT = 8;
+const GADGET_CALL_MAX_WAIT_MS = 30_000;
 function validateBlueprintScreenshotUpload(screenshot: BlueprintScreenshotUpload): BlueprintScreenshotUpload {
   if (screenshot.mimeType !== "image/jpeg" && screenshot.mimeType !== "image/png") {
     throw new Error("Blueprint screenshot must be a JPEG or PNG image.");
@@ -804,6 +810,11 @@ class OverseerImpl implements AgentHooks {
   // sessions -- which the client can retain past the interface's disposal -- and in-flight
   // authorizations, which are sessions-to-be parked on collaborator-controlled awaits.
   #liveSessions: Record<SessionKind, number> = {owner: 0, build: 0, use: 0};
+
+  // Client calls into gadget facets in flight, and those queued behind them (see
+  // #acquireGadgetCallSlot).
+  #gadgetCallsInFlight = 0;
+  #gadgetCallQueue: (() => void)[] = [];
 
   // Count a session for its lifetime. Returns a function that uncounts it, like joinPresence().
   //
@@ -4472,6 +4483,42 @@ class OverseerImpl implements AgentHooks {
     });
   }
 
+  // Wait for a slot to call into a gadget facet; returns the function that frees it.
+  //
+  // The runtime allows a request at most 10 concurrent dynamic worker invocations and fails the
+  // 11th outright ("Dynamic worker concurrency limit exceeded"). Every client call to a gadget
+  // rides one long-lived WebSocket request, so a workspace with many gadgets open trips it as
+  // soon as they all load at once -- which is exactly what happens after every reconnect. Queue
+  // past GADGET_CALL_LIMIT instead. A call that holds its slot a long time (a long poll) must not
+  // wedge the rest, so a waiter gives up queueing after GADGET_CALL_MAX_WAIT_MS and runs anyway,
+  // which at worst reproduces the old failure for that one call.
+  #acquireGadgetCallSlot(): Promise<() => void> {
+    let released = false;
+    let release = () => {
+      if (released) return;
+      released = true;
+      this.#gadgetCallsInFlight--;
+      this.#gadgetCallQueue.shift()?.();
+    };
+    if (this.#gadgetCallsInFlight < GADGET_CALL_LIMIT) {
+      this.#gadgetCallsInFlight++;
+      return Promise.resolve(release);
+    }
+    return new Promise(resolve => {
+      let start = () => {
+        clearTimeout(timer);
+        this.#gadgetCallsInFlight++;
+        resolve(release);
+      };
+      let timer = setTimeout(() => {
+        let i = this.#gadgetCallQueue.indexOf(start);
+        if (i >= 0) this.#gadgetCallQueue.splice(i, 1);
+        start();
+      }, GADGET_CALL_MAX_WAIT_MS);
+      this.#gadgetCallQueue.push(start);
+    });
+  }
+
   // Get an RpcStub for the gadget facet, which can be returned to the client.
   //
   // `joinAs` counts the returned stub toward #hasCollaboratorSession for its own lifetime, like
@@ -4521,8 +4568,16 @@ class OverseerImpl implements AgentHooks {
         //   be reported to the tail worker. However, for some reason, that isn't working --
         //   possibly a runtime bug which needs investigation.
         // TODO: Fix exception reporting it tail workers so we can remove this hack.
-        return (...args: any[]) => {
-          let result: Promise<any> = Reflect.apply(method, target, args);
+        return async (...args: any[]) => {
+          let release = await self.#acquireGadgetCallSlot();
+          let result: Promise<any>;
+          try {
+            result = Promise.resolve(Reflect.apply(method, target, args));
+          } catch (err) {
+            release();
+            throw err;
+          }
+          result.then(release, release);
           return result.catch((err: any) => {
             let msg = err;
             if (err instanceof Error) {
