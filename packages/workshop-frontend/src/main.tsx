@@ -96,6 +96,29 @@ const disposeQuietly = (stub: RpcStub<PublicApi>) => {
   try { stub[Symbol.dispose](); } catch { /* already broken */ }
 };
 
+// After this many failed reconnects in a row, check whether an auth proxy (e.g. Cloudflare Access)
+// is turning the upgrade away because the session expired.
+const AUTH_CHECK_AFTER_FAILURES = 3;
+
+// A browser WebSocket can't see the HTTP response of a refused upgrade, so an expired proxy
+// session just looks like "connection failed" forever. A plain fetch of the same URL can: the
+// proxy answers with a redirect to its login page. Navigating is the only way back in, so reload
+// and let the proxy run its login flow. (Status codes don't count: a signed-in plain GET of /api
+// is itself refused with 403, because a same-origin GET carries no Origin header.)
+async function sessionExpired(): Promise<boolean> {
+  const httpUrl = window.location.protocol + '//' + getBackendHost() + '/api';
+  try {
+    const res = await withTimeout(
+      fetch(httpUrl, { redirect: 'manual', credentials: 'include', cache: 'no-store' }),
+      RECONNECT_PROBE_TIMEOUT_MS);
+    return res.type === 'opaqueredirect';
+  } catch {
+    // Network down, or a cross-origin login redirect the browser hid behind a CORS failure.
+    // Only the latter is an auth problem, and it's indistinguishable here, so keep retrying.
+    return false;
+  }
+}
+
 // Connects with jittered backoff until a candidate answers a probe, and resolves only to that
 // proven connection: capnweb queues sends while a socket is still CONNECTING, so an unproven stub
 // looks fine right up until everything pipelined onto it fails at once.
@@ -103,6 +126,7 @@ async function reconnect(): Promise<RpcStub<PublicApi>> {
   // Fast recovery from one-off blips: skip the first backoff if the dying connection was up a while.
   let skipSleep = Date.now() - lastConnectTime >= INITIAL_BACKOFF_MS;
   let backoff = INITIAL_BACKOFF_MS;
+  let failures = 0;
   for (;;) {
     if (!skipSleep) {
       await sleep(backoff * (0.85 + 0.3 * Math.random()));  // jittered against stampedes
@@ -116,6 +140,12 @@ async function reconnect(): Promise<RpcStub<PublicApi>> {
     } catch (probeError) {
       console.debug('Reconnect attempt failed:', probeError);
       disposeQuietly(candidate);
+      failures++;
+      if (failures % AUTH_CHECK_AFTER_FAILURES === 0 && await sessionExpired()) {
+        console.warn('Sign-in session expired; reloading to sign in again.');
+        window.location.reload();
+        await new Promise<never>(() => {});  // the page is going away
+      }
       continue;
     }
 
