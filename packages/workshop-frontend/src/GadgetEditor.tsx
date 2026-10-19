@@ -1382,6 +1382,15 @@ export default function GadgetEditor() {
     })
   }, [id, navigate, isAgentActive, setWorkspaceVisibility, workpieces, handleTabSelect])
 
+  // A gadget asked to open another gadget of this workspace (a launcher row, a cross-link). By id
+  // when it has one, else by exact title; anything that doesn't resolve to a visible workpiece is
+  // ignored, so a gadget can't open what the picker wouldn't offer.
+  const handleOpenWorkpieceFromGadget = useCallback((target: { id?: number; title?: string }) => {
+    const match = visibleWorkpieces.find(w => w.id === target.id) ??
+        (target.title !== undefined ? visibleWorkpieces.find(w => w.title === target.title) : undefined)
+    if (match) handleSelectWorkpiece(match.id)
+  }, [visibleWorkpieces, handleSelectWorkpiece])
+
   const handleRenameWorkpiece = useCallback(async (workpieceId: WorkpieceId, title: string) => {
     if (!overseer) return
     // The subscription delivers the updated summary, so no local state change is needed.
@@ -2099,6 +2108,7 @@ export default function GadgetEditor() {
                   isVisible={activeTab === 'app' && !previewMode}
                   chatId={previewChatId}
                   onConsoleLog={handleClientConsoleLog}
+                  onOpenWorkpiece={handleOpenWorkpieceFromGadget}
                   onIframeEscape={isGadgetFullscreen ? exitGadgetFullscreen : undefined}
                   onNoUiChange={handleNoUiChange}
                 />
@@ -2197,6 +2207,7 @@ export default function GadgetEditor() {
               isVisible={true}
               chatId={previewChatId}
               onConsoleLog={handleClientConsoleLog}
+              onOpenWorkpiece={handleOpenWorkpieceFromGadget}
             />
           )}
         </div>

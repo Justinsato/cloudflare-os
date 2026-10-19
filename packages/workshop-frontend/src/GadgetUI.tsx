@@ -68,6 +68,35 @@ window.addEventListener('keydown', (event) => {
   }
 }, true);
 
+// A link to another gadget in this workspace opens it in place. The frame can't navigate the
+// page itself (no allow-top-navigation), so it asks the parent. Recognized: data-workpiece-id or
+// data-workpiece-title on any element, an href "#w=<id>", or a workspace URL carrying "?w=<id>".
+window.addEventListener('click', (event) => {
+  if (!(event.target instanceof Element)) return;
+  const el = event.target.closest('[data-workpiece-id],[data-workpiece-title],a[href]');
+  if (!el) return;
+  let id = el.getAttribute('data-workpiece-id');
+  let title = el.getAttribute('data-workpiece-title');
+  if (id == null && title == null && el.tagName === 'A') {
+    const href = el.getAttribute('href') || '';
+    const hash = /^#w=(\d+)$/.exec(href);
+    if (hash) {
+      id = hash[1];
+    } else {
+      try {
+        const url = new URL(href);
+        if (/^\/workspace\/[^/]+\/?$/.test(url.pathname) && /^\d+$/.test(url.searchParams.get('w') || '')) {
+          id = url.searchParams.get('w');
+        }
+      } catch {}
+    }
+  }
+  if (id == null && title == null) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  window.parent.postMessage({ type: 'open-workpiece', id: id == null ? undefined : Number(id), title: title ?? undefined }, '*');
+}, true);
+
 window.addEventListener('click', (event) => {
   if (!(event.target instanceof Element)) {
     return;
@@ -128,6 +157,9 @@ interface GadgetUIProps {
   // Reports whether the "No gadget UI yet" placeholder is showing: true only once a load has
   // confirmed the gadget has no UI, so a spinner or a not-yet-loaded view never counts.
   onNoUiChange?: (showsNoUi: boolean) => void
+  // Fires when the gadget asks to open another gadget of this workspace (see the click handler in
+  // the injected prefix). Carries an id, a title, or both.
+  onOpenWorkpiece?: (target: { id?: number; title?: string }) => void
 }
 
 // How long to wait for a UI bundle before offering a retry instead of a spinner. Not a latency
@@ -139,7 +171,7 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange }: GadgetUIProps) {
+function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange, onOpenWorkpiece }: GadgetUIProps) {
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -171,6 +203,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   onConsoleLogRef.current = onConsoleLog
   const onNoUiChangeRef = useRef(onNoUiChange)
   onNoUiChangeRef.current = onNoUiChange
+  const onOpenWorkpieceRef = useRef(onOpenWorkpiece)
+  onOpenWorkpieceRef.current = onOpenWorkpiece
 
   // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
   // result must not keep counting while the replacement load is pending.
@@ -399,6 +433,10 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         })
       } else if (event.data?.type === 'escape') {
         onIframeEscapeRef.current?.()
+      } else if (event.data?.type === 'open-workpiece') {
+        const id = Number.isSafeInteger(event.data.id) ? event.data.id as number : undefined
+        const title = typeof event.data.title === 'string' ? event.data.title : undefined
+        if (id !== undefined || title !== undefined) onOpenWorkpieceRef.current?.({ id, title })
       }
     }
 

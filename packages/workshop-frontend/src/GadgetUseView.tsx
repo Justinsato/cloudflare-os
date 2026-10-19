@@ -153,6 +153,11 @@ export default function GadgetUseView({
             gadget={gadget}
             height="100%"
             isVisible={true}
+            onOpenWorkpiece={target => {
+              const match = gadgets.find(g => g.id === target.id) ??
+                  (target.title !== undefined ? gadgets.find(g => g.title === target.title) : undefined)
+              if (match) onSelectGadget(match.id)
+            }}
           />
         ) : (
           <div className="flex h-full items-center justify-center px-6 text-center">
