@@ -589,3 +589,59 @@ describe('GadgetUI no-UI placeholder reporting', () => {
     expect(onNoUiChange).not.toHaveBeenCalled()
   })
 })
+
+describe('GadgetUI open-workpiece requests', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+  })
+
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  async function renderWith(onOpenWorkpiece: (target: { id?: number; title?: string }) => void) {
+    const gadget = fakeGadget('launcher', 'document.body.textContent = "launcher"')
+    await act(async () => {
+      root.render(<GadgetUI gadget={gadget.stub} height="100px" onOpenWorkpiece={onOpenWorkpiece} />)
+    })
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    return container.querySelector('iframe')!
+  }
+
+  function post(source: Window | null, data: unknown, origin = 'null') {
+    window.dispatchEvent(new MessageEvent('message', { data, origin, source }))
+  }
+
+  it('passes an id or title from its own frame to the parent', async () => {
+    const open = vi.fn()
+    const iframe = await renderWith(open)
+    post(iframe.contentWindow, { type: 'open-workpiece', id: 30 })
+    post(iframe.contentWindow, { type: 'open-workpiece', title: 'Tracker · Hold · Materials Receipts · Live' })
+    expect(open).toHaveBeenNthCalledWith(1, { id: 30, title: undefined })
+    expect(open).toHaveBeenNthCalledWith(2, { id: undefined, title: 'Tracker · Hold · Materials Receipts · Live' })
+  })
+
+  it('ignores requests from another frame, another origin, or with no usable target', async () => {
+    const open = vi.fn()
+    const iframe = await renderWith(open)
+    post(window, { type: 'open-workpiece', id: 30 })
+    post(iframe.contentWindow, { type: 'open-workpiece', id: 30 }, 'https://evil.example')
+    post(iframe.contentWindow, { type: 'open-workpiece', id: '30' })
+    post(iframe.contentWindow, { type: 'open-workpiece' })
+    expect(open).not.toHaveBeenCalled()
+  })
+
+  it('teaches the frame to turn workspace links into open-workpiece requests', async () => {
+    const iframe = await renderWith(vi.fn())
+    const injected = decodeURIComponent(iframe.srcdoc)
+    expect(injected).toContain("type: 'open-workpiece'")
+    expect(injected).toContain('data-workpiece-id')
+    expect(injected).toContain('data-workpiece-title')
+  })
+})
