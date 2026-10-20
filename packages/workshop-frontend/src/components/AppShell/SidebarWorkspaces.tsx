@@ -28,7 +28,8 @@ import { useAuthenticatedApi } from '../../AuthContext'
 import ShareModal from '../../ShareModal'
 import DeleteConfirmationDialog from '../DeleteConfirmationDialog'
 import SidebarGadgetRow from './SidebarGadgetRow'
-import { siteConfig, type NavGroup } from '../../siteConfig'
+import { siteConfig } from '../../siteConfig'
+import { workspaceNavSections } from '../../workspaceNavOrder'
 
 // Cap on items shown in the Recent list before the user clicks through to /workspaces.
 const RECENT_INITIAL_LIMIT = 6
@@ -125,34 +126,13 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     [needle],
   )
 
-  // Deployment-defined groups (site config), filled in the configured order. Workspaces in a group
-  // leave Favorites and Recent, so each appears in the rail once.
+  // Deployment-defined groups (site config) in configured order, then Favorites, then the rest.
+  // Shared with the top-bar WorkspaceSwitcher so both list workspaces the same way.
   const navGroups = useMemo(() => siteConfig().nav?.groups ?? [], [])
-  const groups = useMemo(() => {
-    const byId = new Map(gadgets.map((g) => [g.id, g]))
-    return navGroups.map((group: NavGroup) => ({
-      label: group.label,
-      items: group.workspaceIds
-        .map((id) => byId.get(id))
-        .filter((g): g is GadgetMetadataWithTimestamps => g !== undefined && matchText(g.title)),
-    }))
-  }, [gadgets, matchText, navGroups])
-  const groupedIds = useMemo(() => new Set(navGroups.flatMap((g) => g.workspaceIds)), [navGroups])
-
-  const { favorites, recent } = useMemo(() => {
-    const favs: GadgetMetadataWithTimestamps[] = []
-    const rest: GadgetMetadataWithTimestamps[] = []
-    for (const g of gadgets) {
-      if (!matchText(g.title) || groupedIds.has(g.id)) continue
-      if (g.pinned) favs.push(g)
-      else rest.push(g)
-    }
-    const byActive = (a: GadgetMetadataWithTimestamps, b: GadgetMetadataWithTimestamps) =>
-      b.lastActive.getTime() - a.lastActive.getTime()
-    favs.sort(byActive)
-    rest.sort(byActive)
-    return { favorites: favs, recent: rest }
-  }, [gadgets, matchText, groupedIds])
+  const { groups, favorites, recent } = useMemo(
+    () => workspaceNavSections(gadgets, navGroups, (g) => matchText(g.title)),
+    [gadgets, matchText, navGroups],
+  )
 
   // --- Workspace actions ---------------------------------------------------
 

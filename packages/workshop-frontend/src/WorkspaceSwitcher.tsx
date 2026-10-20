@@ -2,15 +2,14 @@ import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 
 import { createPortal } from 'react-dom'
 import { CaretDown, Check, MagnifyingGlass, Star } from '@phosphor-icons/react'
 import { isImeComposing } from './keyboardEvent'
+import { siteConfig, type NavGroup } from './siteConfig'
+import { workspaceNavList, workspaceNavSections, type NavOrderWorkspace } from './workspaceNavOrder'
 
 // The workspace name in the top bar, as a menu of every workspace the user can open. Picking one
 // navigates there. Same combobox pattern as GadgetSwitcher: a search box that filters as you type,
 // arrows to move, Enter to open, Escape to close.
 
-export interface WorkspaceSwitcherItem {
-  id: string
-  title: string
-  pinned?: boolean
+export interface WorkspaceSwitcherItem extends NavOrderWorkspace {
   owner?: { name: string }
 }
 
@@ -24,20 +23,16 @@ export interface WorkspaceSwitcherProps {
 }
 
 const untitled = (title: string) => title.trim() || 'Untitled workspace'
-const byTitle = (a: WorkspaceSwitcherItem, b: WorkspaceSwitcherItem) =>
-  untitled(a.title).localeCompare(untitled(b.title), undefined, { sensitivity: 'base' })
 
-/** Favorites first, then everything else, each alphabetical. Exported for tests. */
-export function groupWorkspaces(items: readonly WorkspaceSwitcherItem[], query: string) {
+/** The left nav's sections and order (see workspaceNavOrder), filtered by the query. */
+export function groupWorkspaces(
+  items: readonly WorkspaceSwitcherItem[],
+  query: string,
+  navGroups: readonly NavGroup[] = siteConfig().nav?.groups ?? [],
+) {
   const needle = query.trim().toLowerCase()
-  const shown = items.filter(w => !needle || untitled(w.title).toLowerCase().includes(needle))
-  const favorites = shown.filter(w => w.pinned).toSorted(byTitle)
-  const rest = shown.filter(w => !w.pinned).toSorted(byTitle)
-  if (favorites.length === 0) return rest.length ? [{ name: 'Workspaces', items: rest }] : []
-  return [
-    { name: 'Favorites', items: favorites },
-    ...(rest.length ? [{ name: 'Workspaces', items: rest }] : []),
-  ]
+  return workspaceNavList(workspaceNavSections(
+    items, navGroups, w => !needle || untitled(w.title).toLowerCase().includes(needle)))
 }
 
 export default function WorkspaceSwitcher({
@@ -63,7 +58,7 @@ export default function WorkspaceSwitcher({
   // (a workspace opened from a share link appears there only after its first open).
   const withCurrent = (list: readonly WorkspaceSwitcherItem[]) => {
     const merged = list.map(w => (w.id === currentId ? { ...w, title: currentTitle } : w))
-    if (!merged.some(w => w.id === currentId)) merged.push({ id: currentId, title: currentTitle })
+    if (!merged.some(w => w.id === currentId)) merged.push({ id: currentId, title: currentTitle, lastActive: new Date() })
     return merged
   }
   const items = useMemo(
