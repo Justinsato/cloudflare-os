@@ -1,10 +1,10 @@
 import { useState, type DragEvent, type KeyboardEvent } from 'react'
 import type { WorkpieceId } from '@gadgets/workshop-shared/api'
 
-// Drag-and-drop and keyboard reordering of gadgets, shared by the pane's tab strip and the Outputs
-// rail. Both lists render gadgets in the workspace's saved order (GadgetMetadata.gadgetOrder); a
-// move places one gadget before or after another, and the editor turns that into a new full order
-// and saves it with Overseer.setGadgetOrder().
+// Drag-and-drop and keyboard reordering of gadgets in the Outputs rail, which lists them within
+// each category group in the workspace's saved order (GadgetMetadata.gadgetOrder); a move places
+// one gadget before or after another, and the editor turns that into a new full order and saves it
+// with Overseer.setGadgetOrder().
 
 /** Which side of the target a moved gadget lands on. */
 export type GadgetPlacement = 'before' | 'after'

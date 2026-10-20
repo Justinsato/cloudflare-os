@@ -127,7 +127,9 @@ vi.mock('./components/WorkshopControls', () => ({
 vi.mock('./WorkpiecePicker', () => ({
   default: () => null,
   WORKPIECE_RAIL_COLLAPSED_WIDTH: 48,
-  WORKPIECE_RAIL_EXPANDED_WIDTH: 220,
+  WORKPIECE_RAIL_DEFAULT_WIDTH: 300,
+  getStoredRailWidth: () => 300,
+  persistRailWidth: () => {},
 }))
 vi.mock('./components/format/FormatVisuals', () => ({ FormatGlyph: () => null }))
 vi.mock('./components/GadgetPresence', () => ({ GadgetPresence: () => null }))

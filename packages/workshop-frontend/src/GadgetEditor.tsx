@@ -17,7 +17,8 @@ import {
 } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget } from 'capnweb'
 import { sortByGadgetOrder } from '@gadgets/workshop-shared/gadget-order'
-import { applyGadgetMove, useGadgetReorder, type GadgetMove } from './gadgetReorder'
+import { applyGadgetMove, type GadgetMove } from './gadgetReorder'
+import GadgetSwitcher from './GadgetSwitcher'
 import { useAuthenticatedApi } from './AuthContext'
 import { useConnectionLost, useRpcStub } from './RpcContext'
 import UserMenu from './components/UserMenu'
@@ -46,7 +47,9 @@ import { CountBadge } from './components/CountBadge'
 import ActivityNotifications from './ActivityNotifications'
 import WorkpiecePicker, {
   WORKPIECE_RAIL_COLLAPSED_WIDTH,
-  WORKPIECE_RAIL_EXPANDED_WIDTH,
+  WORKPIECE_RAIL_DEFAULT_WIDTH,
+  getStoredRailWidth,
+  persistRailWidth,
 } from './WorkpiecePicker'
 import ChatInterface, {
   type ActiveFileTarget,
@@ -230,104 +233,6 @@ function PaneLabel({
           {badge}
         </span>
       )}
-    </div>
-  )
-}
-
-// Breathing room left between the open tab and the edge it was scrolled away from, so a tab that
-// only just fits doesn't look clipped.
-const TAB_REVEAL_MARGIN = 8
-
-// The workpiece tabs in the pane header, shown when the workspace holds more than one. The Outputs
-// rail only shows when the pane is closed, so without these an open output gives no sign that the
-// workspace holds others.
-function PaneWorkpieceTabs({
-  gadgets,
-  activeId,
-  onSelect,
-  onMoveGadget,
-}: {
-  gadgets: WorkpieceSummary[]
-  activeId: WorkpieceId | null
-  onSelect: (id: WorkpieceId) => void
-  // Absent when the viewer can't reorder; gadget tabs then aren't draggable.
-  onMoveGadget?: (move: GadgetMove) => void
-}) {
-  const scrollerRef = useRef<HTMLDivElement>(null)
-  const activeRef = useRef<HTMLButtonElement>(null)
-  // Only gadget tabs reorder; a chat's worktrees stay after them.
-  const gadgetIds = useMemo(
-    () => gadgets.filter(g => g.type === 'gadget').map(g => g.id), [gadgets])
-  const reorder = useGadgetReorder(gadgetIds, onMoveGadget, 'x')
-
-  // Whatever is open must be fully readable; the rest may sit off-scroll. Once per selection
-  // change isn't enough, because the layout keeps moving afterwards: the pane animates its width,
-  // and a new output's title arrives after its tab first renders. So re-run on the next frame and
-  // on every resize of the strip.
-  //
-  // Scrolls the strip by hand rather than with scrollIntoView, which is free to scroll every
-  // scrollable ancestor, including the page.
-  useEffect(() => {
-    const scroller = scrollerRef.current
-    if (!scroller) return
-
-    const reveal = () => {
-      const active = activeRef.current
-      if (!active) return
-      const tab = active.getBoundingClientRect()
-      const view = scroller.getBoundingClientRect()
-      if (tab.right > view.right) {
-        scroller.scrollLeft += tab.right - view.right + TAB_REVEAL_MARGIN
-      } else if (tab.left < view.left) {
-        scroller.scrollLeft -= view.left - tab.left + TAB_REVEAL_MARGIN
-      }
-    }
-
-    reveal()
-    const frame = requestAnimationFrame(reveal)
-    // Catches the pane's width animation, which changes the strip's size for ~200ms after this runs.
-    const observer = new ResizeObserver(reveal)
-    observer.observe(scroller)
-    return () => {
-      cancelAnimationFrame(frame)
-      observer.disconnect()
-    }
-  }, [activeId, gadgets])
-
-  return (
-    <div
-      ref={scrollerRef}
-      className="hide-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
-    >
-      {gadgets.map(gadget => {
-        const active = gadget.id === activeId
-        return (
-          <button
-            key={gadget.id}
-            ref={active ? activeRef : undefined}
-            type="button"
-            onClick={() => onSelect(gadget.id)}
-            title={gadget.title}
-            aria-current={active ? 'page' : undefined}
-            {...reorder.itemProps(gadget.id)}
-            style={reorder.dropIndicatorStyle(gadget.id)}
-            // The open one gets room for its whole name; the others yield first.
-            className={`inline-flex flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium tracking-[-0.15px] transition-colors duration-150 ${
-              active
-                ? 'max-w-[240px] bg-kumo-tint text-kumo-default'
-                : 'max-w-[150px] text-kumo-subtle hover:bg-kumo-tint/50 hover:text-kumo-default'
-            } ${reorder.draggingId === gadget.id ? 'opacity-50' : ''}`}
-          >
-            <WorkpieceGlyph summary={gadget} className="flex-shrink-0" />
-            <span className="truncate">{gadget.title}</span>
-            {gadget.type === 'gadget' && gadget.chatId !== undefined && (
-              <span className="flex-shrink-0 rounded-full bg-kumo-fill px-1.5 py-0.5 text-[10px] font-medium leading-none text-kumo-subtle">
-                Draft
-              </span>
-            )}
-          </button>
-        )
-      })}
     </div>
   )
 }
@@ -555,8 +460,15 @@ export default function GadgetEditor() {
   const [blueprintUpdateDialogOpen, setBlueprintUpdateDialogOpen] = useState(false)
   const [previewMode, _setPreviewMode] = useState(false)
   const [workpieceRailExpanded, setWorkpieceRailExpanded] = useState(getInitialAppRailExpanded)
+  // The expanded Outputs rail's width, dragged from its left edge and remembered per browser.
+  const [workpieceRailExpandedWidth, setWorkpieceRailExpandedWidth] = useState(
+    () => isBrowser ? getStoredRailWidth() : WORKPIECE_RAIL_DEFAULT_WIDTH)
+  const handleWorkpieceRailWidthChange = useCallback((width: number) => {
+    setWorkpieceRailExpandedWidth(width)
+    persistRailWidth(width)
+  }, [])
   const workpieceRailWidth = workpieceRailExpanded
-    ? WORKPIECE_RAIL_EXPANDED_WIDTH
+    ? workpieceRailExpandedWidth
     : WORKPIECE_RAIL_COLLAPSED_WIDTH
   const handleWorkpieceRailExpandedChange = useCallback((expanded: boolean) => {
     setWorkspaceTransitionEnabled(true)
@@ -1986,19 +1898,13 @@ export default function GadgetEditor() {
             <div className="flex min-w-0 flex-1 items-center overflow-hidden">
               {paneShowsActivity ? (
                 <PaneLabel icon={Pulse} title="Activity" />
-              ) : visibleWorkpieces.length > 1 ? (
-                <PaneWorkpieceTabs
-                  gadgets={visibleWorkpieces}
-                  activeId={selectedWorkpieceId}
-                  onSelect={handleSelectWorkpiece}
-                  onMoveGadget={canReorderGadgets ? handleMoveGadget : undefined}
-                />
               ) : selectedWorkpieceSummary && (
-                <PaneLabel
-                  workpiece={selectedWorkpieceSummary}
-                  title={selectedWorkpieceSummary.title}
-                  badge={selectedWorkpieceSummary.type === 'gadget' &&
-                      selectedWorkpieceSummary.chatId !== undefined ? 'Draft' : undefined}
+                // One switcher for every output: the selected one's name, opening a searchable
+                // list grouped by category (Cmd/Ctrl+K). Reorder lives in the Outputs rail.
+                <GadgetSwitcher
+                  workpieces={visibleWorkpieces}
+                  selectedId={selectedWorkpieceId}
+                  onSelect={handleSelectWorkpiece}
                 />
               )}
             </div>
@@ -2178,13 +2084,17 @@ export default function GadgetEditor() {
         {showOutputRail && (
           <div className="flex flex-shrink-0 max-md:hidden">
             <WorkpiecePicker
+              workspaceId={id}
               gadgets={allGadgets}
               worktrees={allWorktrees}
-              selectedId={null}
+              selectedId={selectedWorkpieceId}
               agentEditingId={streamingActiveFile?.workpieceId ?? null}
               hookedGadgetIds={hookedGadgetIds}
               expanded={workpieceRailExpanded}
               onExpandedChange={handleWorkpieceRailExpandedChange}
+              width={workpieceRailExpandedWidth}
+              onWidthChange={handleWorkpieceRailWidthChange}
+              onResizingChange={setIsResizing}
               onSelect={handleSelectWorkpiece}
               onRename={handleRenameWorkpiece}
               onMoveGadget={canReorderGadgets ? handleMoveGadget : undefined}
