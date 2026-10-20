@@ -406,6 +406,26 @@ export interface AgentHooks {
       : Promise<{id: WorkpieceId, title: string, baseCommit: string}>;
 
   /**
+   * Rename a gadget, immediately, through the same registry write as GadgetClient.setTitle() (so
+   * workpiece subscribers and the Outputs index see it the same way). The title is validated as
+   * createGadget validates it (trimmed, non-empty). Throws an agent-readable error unless `id`
+   * names a gadget visible to `forChatId` (not a worktree, an external resource, or a gadget still
+   * provisional to another chat). Returns the title before and after.
+   */
+  renameGadget(id: WorkpieceId, title: string, forChatId: number)
+      : {oldTitle: string, title: string};
+
+  /**
+   * Queue a request for the workspace owner to permanently remove a gadget, attributed to the
+   * chat's agent: a pending action that the step's action card shows in the chat. Nothing is
+   * removed until the owner approves it. If a request for the same gadget is already pending,
+   * returns that one (`alreadyPending`) instead of queueing another. Throws an agent-readable
+   * error for anything but an accepted gadget visible to the chat.
+   */
+  requestGadgetRemoval(chatId: number, id: WorkpieceId, reason: string)
+      : {actionId: number, title: string, alreadyPending: boolean};
+
+  /**
    * Whether the workpiece is a worktree: chat-private, git-rooted, read lazily by path. False
    * for gadgets and for ids that no longer resolve.
    */
@@ -644,6 +664,8 @@ Draft requested text directly in chat; do not look up blueprints or create a Gad
 Note that users rarely ask for "a Gadget" in those words. They ask for a thing: a doc, a deck, a tracker, a tool that does X. "Summarize this doc", "draft an email", or "check these figures" usually asks for an answer or one-off task, not a new Gadget. Work on an existing Gadget when the request refers to it. If a useful answer completes the task, give that answer. Ask a brief clarification when it's unclear whether the user wants something created; otherwise, proceed. When the goal is unclear, ask what the user wants to accomplish before suggesting an application.
 
 Tools refer to Gadgets by their binding name in your env: the file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) take a \`workpiece\` parameter naming the Gadget that owns the file, and \`setGadgetBinding\` takes a \`gadget\` parameter naming the Gadget whose bindings to modify. Some older workspaces have a "default" Gadget (noted in the gadget list) which the file tools fall back to when \`workpiece\` is omitted; even so, prefer passing the name explicitly.
+
+To rename a Gadget, use \`renameGadget\`: it changes the title shown in the gadget's tab and on the Outputs page, immediately. Never rename a Gadget to include the workspace's name. To remove a Gadget, use \`removeGadget\`: it only asks the workspace owner, who must approve before anything is removed, and removal is permanent once approved. Both take the gadget's env name (or, for a gadget with no binding in your env, the workpiece id shown in the gadget list).
 
 # Writing Gadgets
 
@@ -1138,6 +1160,26 @@ Create a new Gadget in this workspace. The new gadget immediately becomes availa
 Use this when the user's request or established context clearly calls for a new application or saved output. An empty workspace or a one-off task does not require a gadget. Always choose a short, descriptive title — the user will see it.
 
 By default the new gadget is empty. Pass \`blueprintId\` (discovered with the \`listBlueprints\` tool, or given by the user) to instead start the gadget from a blueprint's code; the result then also describes the bindings the blueprint expects you to wire up.
+
+To change an existing gadget's title use \`renameGadget\`; to get rid of one use \`removeGadget\`.
+`.trim();
+
+let RENAME_GADGET_TOOL_DESCRIPTION = `
+Rename an existing Gadget. This changes the gadget's title as shown to the user in its tab and on the Outputs page. It does not change the gadget's binding name in your \`env\`, its files, or its bindings. The rename applies immediately; no approval is needed.
+
+Name the gadget by its \`env\` binding name as listed in the system prompt (or the name you gave \`createGadget\`), or by its numeric workpiece id. Choose a short, descriptive title. Never put the workspace's name in a gadget title: the gadget already lives inside the workspace, so repeating it only adds noise.
+
+Use this when the user asks for a different name, or when a gadget's title no longer describes what it does.
+`.trim();
+
+let REMOVE_GADGET_TOOL_DESCRIPTION = `
+Ask the workspace owner to remove a Gadget. This never removes anything by itself: it puts an approval card in the chat naming the gadget and your \`reason\`, and the gadget stays exactly as it is until the owner approves. Only the workspace owner can approve. If the owner rejects the request, the gadget is kept.
+
+Removal is permanent once approved: the gadget's code, its history, and any hooks that wake it are deleted and cannot be restored. Only request it when the user has asked for the gadget to be removed, or has clearly agreed to it. Give a concrete \`reason\` the owner can judge, in a sentence or two.
+
+Name the gadget by its \`env\` binding name as listed in the system prompt, or by its numeric workpiece id. A gadget created in this conversation that hasn't been accepted yet can't be removed this way; discarding this conversation's changes removes it instead.
+
+The result only confirms the request is pending owner approval. Tell the user it is waiting for the owner's approval; don't claim the gadget was removed, and don't request removal of the same gadget again.
 `.trim();
 
 let CREATE_WORKTREE_TOOL_DESCRIPTION = `
@@ -1825,6 +1867,22 @@ async function runAgentPass(
     return entry.id;
   };
 
+  // Resolve the `gadget` parameter of renameGadget/removeGadget: a chat binding name, or the
+  // gadget's numeric workpiece id (the only handle on a gadget with no binding in the env).
+  // Binding names are identifiers, so an all-digit string can only be an id. Whether the id
+  // names a gadget the chat may touch is checked by the hook.
+  let resolveToolGadgetId = (gadget: string): WorkpieceId => {
+    let name = gadget.trim();
+    if (/^\d+$/.test(name)) return Number(name);
+    let entry = chatBindings.get(name);
+    if (!entry || entry.type !== "workpiece") {
+      throw new Error(
+          `There is no gadget named "${gadget}" in your env. Pass the env name of a gadget, ` +
+          `as listed in the system prompt, or its numeric workpiece id.`);
+    }
+    return entry.id;
+  };
+
   // The model context reconstructed from the chat log.
   let modelMessages: Message[] = [];
   // Records which chat message produced each model message, so compaction can convert a cut in the
@@ -2399,6 +2457,24 @@ async function runAgentPass(
                   toolOutput = {text: jsonToolResultText(toolCall.output)};
                   break;
                 }
+                case "renameGadget":
+                  // Like createGadget: the rename was applied (and its effect recorded) when the
+                  // call ran, so replay returns the recorded result and never renames again --
+                  // re-applying would revert any rename the user made since.
+                  if (toolCall.output === undefined) {
+                    throw new Error("renameGadget tool call in log is missing its result");
+                  }
+                  toolOutput = {text: jsonToolResultText(toolCall.output)};
+                  break;
+                case "removeGadget":
+                  // The request was queued (as a pending action) when the call ran; replay
+                  // returns the recorded result rather than queueing another. Whether the owner
+                  // has since decided is not the call's result.
+                  if (toolCall.output === undefined) {
+                    throw new Error("removeGadget tool call in log is missing its result");
+                  }
+                  toolOutput = {text: jsonToolResultText(toolCall.output)};
+                  break;
                 case "executeCode":
                   toolOutput = {text: toolCall.output!};
                   break;
@@ -2961,7 +3037,8 @@ async function runAgentPass(
         let envName = chatNameFor(info.id);
         let lines = [envName !== undefined
             ? `## Gadget ${envName}: ${JSON.stringify(info.title)}`
-            : `## Gadget ${JSON.stringify(info.title)} (no binding in your env)`];
+            : `## Gadget ${JSON.stringify(info.title)} (no binding in your env; workpiece id ` +
+              `${info.id})`];
         if (info.isDefault) {
           lines.push(
               `This is the workspace's default gadget: file tools operate on it when their ` +
@@ -3707,6 +3784,83 @@ async function runAgentPass(
           toolCallNotes.set(toolCallId, {
             error: toolErrorText(error)
           });
+          throw error;
+        }
+      }
+    }),
+
+    renameGadget: defineTool({
+      name: "renameGadget",
+      label: "Rename gadget",
+      description: RENAME_GADGET_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        gadget: Type.String({
+          description:
+              "The gadget to rename: its env binding name as listed in the system prompt, or " +
+              "its numeric workpiece id.",
+        }),
+        title: Type.String({
+          description:
+              "The new title. Short, descriptive, human-readable; shown to the user in the " +
+              "gadget's tab and on the Outputs page. Never include the workspace's name.",
+        }),
+      }),
+      execute: async (toolCallId, {gadget, title}) => {
+        try {
+          let gadgetId = resolveToolGadgetId(gadget);
+          // Applied now, not at the step barrier: a title is registry metadata, not proposed
+          // code, so there is nothing to accept. The recorded output is what replay returns
+          // (see the replay path above), so a replayed call never renames again.
+          let renamed = hooks.renameGadget(gadgetId, title, chatId);
+          let output = {gadgetId, oldTitle: renamed.oldTitle, title: renamed.title};
+          return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      }
+    }),
+
+    removeGadget: defineTool({
+      name: "removeGadget",
+      label: "Remove gadget",
+      description: REMOVE_GADGET_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        gadget: Type.String({
+          description:
+              "The gadget to remove: its env binding name as listed in the system prompt, or " +
+              "its numeric workpiece id.",
+        }),
+        reason: Type.String({
+          description:
+              "Why the gadget should be removed, in a sentence or two. Shown to the workspace " +
+              "owner on the approval card.",
+        }),
+      }),
+      execute: async (toolCallId, {gadget, reason}) => {
+        try {
+          let gadgetId = resolveToolGadgetId(gadget);
+          // Never removes: this queues a pending action for the owner. Its card joins the chat
+          // after this step's assistant message (via consumeCapturedActions), and only the
+          // owner's approval removes the gadget (see OverseerImpl.applyGadgetRemoval).
+          let request = hooks.requestGadgetRemoval(chatId, gadgetId, reason);
+          let output = {
+            gadgetId,
+            title: request.title,
+            actionId: request.actionId,
+            status: "pendingOwnerApproval" as const,
+            ...(request.alreadyPending ? {alreadyPending: true} : {}),
+            message: request.alreadyPending
+                ? `A request to remove "${request.title}" was already waiting for the workspace ` +
+                  `owner's approval, so no new request was made. The gadget stays until the ` +
+                  `owner approves it.`
+                : `Removal of "${request.title}" is pending the workspace owner's approval. The ` +
+                  `gadget has not been removed and stays until the owner approves; if the owner ` +
+                  `rejects the request, it is kept.`,
+          };
+          return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
           throw error;
         }
       }

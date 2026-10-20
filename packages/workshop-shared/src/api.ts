@@ -4226,6 +4226,51 @@ export type AiToolCall = {
    */
   output?: {worktreeId: WorkpieceId, changeId?: number, baseCommit: string};
 } | {
+  /**
+   * Rename an existing gadget: its title as shown in tabs and on the Outputs page. Applied
+   * immediately, through the same registry write as GadgetClient.setTitle().
+   */
+  toolName: "renameGadget";
+  input: {
+    /** The gadget's env binding name, or its numeric workpiece id. */
+    gadget: string;
+    /** The new title. Trimmed and required to be non-empty, as createGadget's is. */
+    title: string;
+  };
+
+  /**
+   * What the rename did, recorded when it was applied. Replay returns this instead of renaming
+   * again, so a replayed log never re-applies (or reverts) a title.
+   */
+  output?: {gadgetId: WorkpieceId, oldTitle: string, title: string};
+} | {
+  /**
+   * Ask the workspace owner to permanently remove a gadget. Never removes anything itself: it
+   * queues a pending action (shown in the chat as an approval card), and only the owner's
+   * approval removes the gadget (OverseerImpl.applyGadgetRemoval). Rejection leaves it untouched.
+   */
+  toolName: "removeGadget";
+  input: {
+    /** The gadget's env binding name, or its numeric workpiece id. */
+    gadget: string;
+    /** Why the agent wants it removed, shown to the owner on the approval card. */
+    reason: string;
+  };
+
+  /**
+   * The queued request, recorded when it was made: replay returns this instead of queueing
+   * another. `actionId` names the pending action; `alreadyPending` is set when an earlier request
+   * for the same gadget was still awaiting a decision, so no new one was queued.
+   */
+  output?: {
+    gadgetId: WorkpieceId;
+    title: string;
+    actionId: number;
+    status: "pendingOwnerApproval";
+    alreadyPending?: boolean;
+    message: string;
+  };
+} | {
   toolName: "executeCode";
   input: {
     code: string;

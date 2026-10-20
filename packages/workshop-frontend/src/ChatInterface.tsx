@@ -621,6 +621,13 @@ function getToolCallSummary(
     }
     case "createWorktree":
       return { verb: "Created worktree", target: tc.input.title };
+    case "renameGadget":
+      return { verb: "Renamed gadget", target: tc.input.title };
+    case "removeGadget":
+      return {
+        verb: "Requested removal of",
+        target: tc.output?.title ?? tc.input.gadget,
+      };
     case "executeCode": {
       // Prefer the first non-empty line as a preview. `code` may be absent while the tool call's
       // input is still streaming in, so guard against undefined.
@@ -747,6 +754,10 @@ function describeToolCallCount(toolName: AiToolCall["toolName"], count: number):
       return `Created ${pluralize(count, "gadget")}`;
     case "createWorktree":
       return `Created ${pluralize(count, "worktree")}`;
+    case "renameGadget":
+      return `Renamed ${pluralize(count, "gadget")}`;
+    case "removeGadget":
+      return count === 1 ? "Requested a gadget removal" : `Requested ${count} gadget removals`;
     case "observeUserChanges":
       return `Observed ${pluralize(count, "change set")}`;
     case "giveUp":
@@ -791,6 +802,8 @@ function getToolIcon(
       return Plus;
     case "createWorktree":
       return GitBranch;
+    case "renameGadget":
+      return PencilSimple;
     case "listBlueprints":
       return Blueprint;
     case "observeUserChanges":
@@ -824,6 +837,10 @@ function getProvisionalToolLabel(toolName: AiToolCall["toolName"] | null | undef
       return "Creating gadget";
     case "createWorktree":
       return "Creating worktree";
+    case "renameGadget":
+      return "Renaming gadget";
+    case "removeGadget":
+      return "Requesting gadget removal";
     case "executeCode":
       return "Running code";
     case "webFetch":
@@ -854,6 +871,8 @@ function getProvisionalToolVerb(toolName: AiToolCall["toolName"]): string {
     case "saveCapsuleAsBinding": return "Saving";
     case "createGadget": return "Creating gadget";
     case "createWorktree": return "Creating worktree";
+    case "renameGadget": return "Renaming gadget";
+    case "removeGadget": return "Requesting gadget removal";
     case "executeCode": return "Running code";
     case "webFetch": return "Fetching";
     case "observeUserChanges": return "Observing user changes";
@@ -883,6 +902,8 @@ function describeProvisionalToolCount(toolName: AiToolCall["toolName"], count: n
     case "saveCapsuleAsBinding": return `Saving ${pluralize(count, "resource")}`;
     case "createGadget": return `Creating ${pluralize(count, "gadget")}`;
     case "createWorktree": return `Creating ${pluralize(count, "worktree")}`;
+    case "renameGadget": return `Renaming ${pluralize(count, "gadget")}`;
+    case "removeGadget": return `Requesting ${pluralize(count, "gadget removal")}`;
     case "observeUserChanges": return `Observing ${pluralize(count, "change set")}`;
     case "giveUp": return "Stopping";
     case "listBlueprints": return "Listing blueprints";
