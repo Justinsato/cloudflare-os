@@ -11003,6 +11003,30 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return result;
   }
 
+  async newAmbientGatekeeper(vendorId: string): Promise<GatekeeperClient<any>> {
+    vendorId = vendorId.toLowerCase();
+    // Ambient capsules run on the owner's connected account and ensureAmbientCapsules() drops any
+    // record not keyed to one, so only the owner can add one this way.
+    if (!this.isOwner) {
+      throw new Error("Only the workspace owner can add this connection.");
+    }
+    // Idempotent: a no-op when the owner already holds the account; throws if admin-disabled.
+    await retryOnDoReset(
+        () => this.#clientUser.provisionAmbientAccount(vendorId), this.impl.logger);
+    await this.impl.ensureAmbientCapsules();
+    let record = [...this.impl.storage.gatekeepers.list()].find(gk =>
+        gk.creationSpec?.type === "ambient" && gk.creationSpec.vendorId === vendorId);
+    if (!record) {
+      throw new Error(`The "${vendorId}" connection isn't available in this workspace.`);
+    }
+    // Hand back the workspace's shared ambient record, the same one the agent's setGadgetBinding
+    // binds, so the gadget and every chat's env reach one connection.
+    let facet = await this.impl.getGatekeeperFacet(record.id);
+    this.impl.assertGatekeeperUsable(record.id);
+    return new GatekeeperClientImpl(
+        this.impl, record.id, facet, this.clientUserId, this.#mintedCapabilityKind());
+  }
+
   async newAgentSpawnerGatekeeper(config: AgentSpawnerConfig): Promise<GatekeeperClient<any>> {
     // Validate the configured env: names must be valid binding names and targets must exist --
     // and must not be gadgets still provisional to some chat, which belong to that chat's
@@ -12424,6 +12448,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async newGatekeeper(_accountId: number, _resourceUrl: string)
       : Promise<GatekeeperClient<any> | null> { this.#deny(); }
   async newAiModelGatekeeper(_modelId: string): Promise<GatekeeperClient<any>> { this.#deny(); }
+  async newAmbientGatekeeper(_vendorId: string): Promise<GatekeeperClient<any>> { this.#deny(); }
   async newAgentSpawnerGatekeeper(_config: AgentSpawnerConfig): Promise<GatekeeperClient<any>> {
     this.#deny();
   }
@@ -12614,7 +12639,8 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
         name,
         target: edge.target,
         resourceTitle: gatekeeper?.resourceTitle || "(title unavailable)",
-        vendorId: gatekeeper?.creationSpec?.type === "gatekeeper"
+        vendorId: gatekeeper?.creationSpec?.type === "gatekeeper" ||
+                gatekeeper?.creationSpec?.type === "ambient"
             ? gatekeeper.creationSpec.vendorId
             : undefined,
         ...(edge.pending ? {chatId: edge.pending.chatId} : {}),

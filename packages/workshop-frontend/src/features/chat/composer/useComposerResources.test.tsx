@@ -341,4 +341,29 @@ describe("useComposerResources", () => {
     expect(harness.onConnectionCreated).not.toHaveBeenCalled();
     expect(harness.onError).not.toHaveBeenCalled();
   });
+
+  it("keeps a shared ambient connection when the attach is abandoned", async () => {
+    let resolveId!: (value: number) => void;
+    const dispose = vi.fn<() => void>();
+    const remove = vi.fn<() => Promise<void>>(async () => {});
+    const gatekeeper = {
+      getId: () => new Promise<number>((resolve) => { resolveId = resolve; }),
+      describe: async () => description,
+      getCreationSpec: async () => ({ type: "ambient" as const, vendorId: "cockpit", accountId: 3 }),
+      remove,
+      [Symbol.dispose]: dispose,
+    } as unknown as RpcStub<GatekeeperClient<any>>;
+    const harness = await renderHarness(async () => null);
+    act(() => harness.controls.resources.openAttachModal(0));
+    const creation = harness.controls.resources.attachCreated(gatekeeper);
+
+    act(() => harness.controls.resources.closeAttachModal());
+    await act(async () => {
+      resolveId(7);
+      await creation;
+    });
+
+    expect(remove).not.toHaveBeenCalled();
+    expect(dispose).toHaveBeenCalledOnce();
+  });
 });
