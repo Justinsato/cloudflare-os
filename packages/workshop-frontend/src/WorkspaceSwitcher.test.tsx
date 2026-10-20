@@ -8,25 +8,47 @@ import WorkspaceSwitcher, { groupWorkspaces, type WorkspaceSwitcherItem } from '
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
+const at = (minutesAgo: number) => new Date(Date.UTC(2026, 9, 20, 12) - minutesAgo * 60_000)
+
+// Without nav groups, the left nav (and so the switcher) shows Favorites then Recent workspaces,
+// each most recently active first: lib, port, then back9, cap, prop.
 const WORKSPACES: WorkspaceSwitcherItem[] = [
-  { id: 'prop', title: 'Property Operations' },
-  { id: 'port', title: 'Portfolio Management', pinned: true },
-  { id: 'back9', title: 'Back9 Trades', owner: { name: 'Pat Doe' } },
-  { id: 'cap', title: 'Capital Markets' },
-  { id: 'lib', title: 'Library and Lists', pinned: true },
+  { id: 'prop', title: 'Property Operations', lastActive: at(30) },
+  { id: 'port', title: 'Portfolio Management', pinned: true, lastActive: at(20) },
+  { id: 'back9', title: 'Back9 Trades', owner: { name: 'Pat Doe' }, lastActive: at(5) },
+  { id: 'cap', title: 'Capital Markets', lastActive: at(10) },
+  { id: 'lib', title: 'Library and Lists', pinned: true, lastActive: at(1) },
 ]
 
+const sections = (groups: ReturnType<typeof groupWorkspaces>) => groups.map(g => [g.name, g.items.map(w => w.id)])
+
 describe('groupWorkspaces', () => {
-  it('puts favorites first, each group alphabetical', () => {
-    expect(groupWorkspaces(WORKSPACES, '').map(g => [g.name, g.items.map(w => w.id)])).toEqual([
+  it('matches the left nav without groups: Favorites, then Recent, most recent first', () => {
+    expect(sections(groupWorkspaces(WORKSPACES, '', []))).toEqual([
       ['Favorites', ['lib', 'port']],
-      ['Workspaces', ['back9', 'cap', 'prop']],
+      ['Recent workspaces', ['back9', 'cap', 'prop']],
     ])
   })
 
-  it('drops the Favorites group when nothing pinned matches', () => {
-    expect(groupWorkspaces(WORKSPACES, 'trades').map(g => g.name)).toEqual(['Workspaces'])
-    expect(groupWorkspaces(WORKSPACES, 'zzz')).toEqual([])
+  it('matches the left nav with site-config groups: groups in configured order, then Favorites, then Other', () => {
+    const navGroups = [
+      { label: 'Operations', workspaceIds: ['prop', 'missing', 'lib'] },
+      { label: 'Operating companies', workspaceIds: ['back9'] },
+    ]
+    expect(sections(groupWorkspaces(WORKSPACES, '', navGroups))).toEqual([
+      ['Operations', ['prop', 'lib']],
+      ['Operating companies', ['back9']],
+      ['Favorites', ['port']],
+      ['Other workspaces', ['cap']],
+    ])
+    expect(sections(groupWorkspaces(WORKSPACES, 'trades', navGroups))).toEqual([
+      ['Operating companies', ['back9']],
+    ])
+  })
+
+  it('drops empty sections', () => {
+    expect(groupWorkspaces(WORKSPACES, 'trades', []).map(g => g.name)).toEqual(['Recent workspaces'])
+    expect(groupWorkspaces(WORKSPACES, 'zzz', [])).toEqual([])
   })
 })
 
