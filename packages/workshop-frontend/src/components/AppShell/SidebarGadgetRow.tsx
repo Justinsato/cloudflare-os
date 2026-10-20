@@ -5,13 +5,8 @@ import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from
 import { useState, useEffect, useRef } from 'react'
 import type { GadgetMetadataWithTimestamps } from '@gadgets/workshop-shared/api'
 import { isImeComposing } from '../../keyboardEvent'
+import { workspaceMonogram } from '../../workspaceMonogram'
 
-function initials(title: string | undefined): string {
-  const t = (title || 'Untitled').trim()
-  if (!t) return 'UG'
-  const parts = t.split(/\s+/).slice(0, 2)
-  return parts.map((p) => p[0]?.toUpperCase() ?? '').join('') || t.slice(0, 2).toUpperCase()
-}
 
 /**
  * One row in the sidebar's Favorites / Recent list. Compact, with a monogram avatar, a truncated
@@ -67,7 +62,7 @@ export default function SidebarGadgetRow({
         className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-kumo-fill text-[10px] font-medium text-kumo-subtle"
         aria-hidden="true"
       >
-        {initials(gadget.title)}
+        {workspaceMonogram(gadget.title)}
       </div>
 
       {!collapsed && (

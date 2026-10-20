@@ -122,6 +122,7 @@ import {
 import { UnresolvedConflictsDialog } from "./features/chat/UnresolvedConflictsDialog";
 import { BlueprintProposalNotice } from "./features/blueprint-updates/BlueprintProposalNotice";
 import { appliedBlueprintMerges } from "./features/blueprint-updates/blueprintProposal";
+import { formatUsageCost } from "./formatUsageCost";
 
 /**
  * The selected chat's live (accepted but not yet materialized) change row stream, delivered via
@@ -5426,7 +5427,7 @@ function ChatInterface({
                           <>
                             <span className="flex-shrink-0" aria-hidden="true">·</span>
                             <span className="flex-shrink-0 font-mono">
-                              ${chat.totalCost.toFixed(4)}
+                              {formatUsageCost(chat.totalCost)}
                             </span>
                           </>
                         )}
@@ -6582,7 +6583,7 @@ function ChatInterface({
                       </span>
                     )}
                     {currentChatMetadata?.totalCost != null && (
-                      <span>${currentChatMetadata.totalCost.toFixed(4)}</span>
+                      <span>{formatUsageCost(currentChatMetadata.totalCost)}</span>
                     )}
                   </div>
                 </div>

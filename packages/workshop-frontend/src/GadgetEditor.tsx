@@ -79,6 +79,7 @@ import { reportIssue } from './errorReporting'
 import GadgetExportMenu from './GadgetExportMenu'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './components/menuStyles'
 import { isImeComposing } from './keyboardEvent'
+import { formatUsageCost } from './formatUsageCost'
 
 const NO_GADGETS: ReadonlySet<WorkpieceId> = new Set()
 
@@ -177,11 +178,6 @@ type WorkspaceView =
   | { mode: 'app'; appId?: WorkpieceId }
   | { mode: 'activity' }
 
-function formatHeaderCost(cost: number) {
-  if (cost === 0) return '$0'
-  if (cost < 0.01) return '<$0.01'
-  return `$${cost.toFixed(2)}`
-}
 
 // The first tab is named after what the selected workpiece is ("Document" for a gadget built from
 // a document blueprint), falling back to "App" when it declares no format. A worktree has no app
@@ -1599,7 +1595,7 @@ export default function GadgetEditor() {
 
           {metadata.totalCost != null && (
             <span className="ml-3 mr-2 text-[12px] leading-4 font-normal tracking-[-0.2px] text-kumo-subtle">
-              {formatHeaderCost(metadata.totalCost)}
+              {formatUsageCost(metadata.totalCost)}
             </span>
           )}
 
