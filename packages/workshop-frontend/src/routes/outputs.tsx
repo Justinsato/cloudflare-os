@@ -27,14 +27,36 @@ import { useOutputFormats } from '../components/format/useOutputFormats'
 import NewFormatRow from '../components/format/NewFormatRow'
 import DeleteConfirmationDialog from '../components/DeleteConfirmationDialog'
 import { WorkshopButton, WorkshopIconButton } from '../components/WorkshopControls'
+import { gadgetTitleDetail, parseGadgetTitle } from '../gadgetTitle'
 
 // The Outputs page: everything the user's workspaces have produced, in one place, so they don't
 // have to remember which workspace they made a thing in. Backed by an index in the user's own
 // account that each workspace pushes to (AuthenticatedApi.listOutputs()).
 
+// Filter and search live in the URL so a reload or a shared link keeps them.
+type OutputsSearch = {
+  type?: string
+  scope?: 'mine' | 'shared'
+  q?: string
+}
+
 export const Route = createFileRoute('/outputs')({
   component: OutputsPage,
+  validateSearch: (search: Record<string, unknown>): OutputsSearch => ({
+    type: typeof search.type === 'string' && search.type !== 'all' ? search.type : undefined,
+    scope: search.scope === 'mine' || search.scope === 'shared' ? search.scope : undefined,
+    q: typeof search.q === 'string' && search.q !== '' ? search.q : undefined,
+  }),
 })
+
+// Convention titles ("Category · Action · Contents · Cadence") lead with the Contents in lists; the
+// rest moves to the secondary line. Other titles show whole.
+function outputHeading(output: OutputSummary): { title: string; detail?: string } {
+  const full = output.title || 'Untitled'
+  const parsed = parseGadgetTitle(full)
+  if (!parsed.category) return { title: full }
+  return { title: parsed.contents, detail: `${parsed.category} · ${gadgetTitleDetail(parsed)}` }
+}
 
 function formatRelativeTime(date: Date): string {
   const diff = Date.now() - date.getTime()
@@ -119,21 +141,27 @@ function OutputMenu({
 
 // Secondary line under an output's title in the grid, where there's no room for meta columns.
 function subtitle(output: OutputSummary): string {
-  const parts = [output.workspaceTitle || 'Untitled workspace']
+  const { detail } = outputHeading(output)
+  const parts = detail ? [detail, output.workspaceTitle || 'Untitled workspace'] : [output.workspaceTitle || 'Untitled workspace']
   if (output.owner) parts.push(`Shared by ${output.owner.name}`)
   parts.push(`Workspace active ${formatRelativeTime(output.lastActive)}`)
   return parts.join(' · ')
 }
 
-// Provenance for a list row: the output came out of the user's own workspace or a shared one.
+// Provenance for a list row. Only shared outputs say anything; the user's own are the default and
+// labelling every row "Created by you" is noise. The column keeps its width so rows still align.
 function OutputProvenance({ owner }: { owner?: OutputSummary['owner'] }) {
   return (
     <span
       className="flex w-52 items-center gap-1 truncate whitespace-nowrap"
-      title={owner ? `In a workspace shared by ${owner.name}` : 'In a workspace you created'}
+      title={owner ? `In a workspace shared by ${owner.name}` : undefined}
     >
-      {owner ? <ShareNetwork size={11} /> : <User size={11} />}
-      <span className="truncate">{owner ? `Shared by ${owner.name}` : 'Created by you'}</span>
+      {owner && (
+        <>
+          <ShareNetwork size={11} />
+          <span className="truncate">Shared by {owner.name}</span>
+        </>
+      )}
     </span>
   )
 }
@@ -162,8 +190,9 @@ function OutputCard({
       <div className="flex items-center gap-2.5 px-3 py-2.5">
         <FormatTile output={output.output} size="sm" />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
-            {output.title || 'Untitled'}
+          <p className="truncate text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default"
+             title={output.title || 'Untitled'}>
+            {outputHeading(output).title}
           </p>
           <p className="mt-0.5 truncate text-[12px] leading-4 tracking-[-0.2px] text-kumo-subtle">
             {subtitle(output)}
@@ -189,11 +218,12 @@ function OutputRow({
     >
       <FormatTile output={output.output} />
       <div className="min-w-0 flex-1">
-        <p className="truncate text-sm font-medium tracking-[-0.25px] text-kumo-default">
-          {output.title || 'Untitled'}
+        <p className="truncate text-sm font-medium tracking-[-0.25px] text-kumo-default"
+           title={output.title || 'Untitled'}>
+          {outputHeading(output).title}
         </p>
         <p className="mt-0.5 truncate text-[12px] leading-4 tracking-[-0.2px] text-kumo-subtle">
-          {formatOf(output.output).noun} · {output.workspaceTitle || 'Untitled workspace'}
+          {outputHeading(output).detail ?? formatOf(output.output).noun} · {output.workspaceTitle || 'Untitled workspace'}
         </p>
       </div>
       {/* Fixed-width meta columns so rows line up like a table. */}
@@ -402,9 +432,20 @@ function OutputsPage() {
     if (typeof window === 'undefined') return 'grid'
     return localStorage.getItem('outputs-view') === 'list' ? 'list' : 'grid'
   })
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
-  const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>('all')
-  const [search, setSearch] = useState('')
+  const urlSearch = Route.useSearch()
+  const typeFilter: TypeFilter = urlSearch.type ?? 'all'
+  const ownerFilter: OwnerFilter = urlSearch.scope ?? 'all'
+  const search = urlSearch.q ?? ''
+  const setUrlSearch = (patch: Partial<OutputsSearch>) => {
+    void navigate({
+      to: '/outputs',
+      search: (prev: OutputsSearch) => ({ ...prev, ...patch }),
+      replace: true,
+    })
+  }
+  const setTypeFilter = (value: TypeFilter) => setUrlSearch({ type: value === 'all' ? undefined : value })
+  const setOwnerFilter = (value: OwnerFilter) => setUrlSearch({ scope: value === 'all' ? undefined : value })
+  const setSearch = (value: string) => setUrlSearch({ q: value === '' ? undefined : value })
   const [outputs, setOutputs] = useState<OutputSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState(false)

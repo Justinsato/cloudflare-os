@@ -11,14 +11,10 @@ import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from './menuStyles'
 import { BlueprintPreviewImage } from './BlueprintPreviewImage'
 import DeleteConfirmationDialog from './DeleteConfirmationDialog'
 import { isImeComposing } from '../keyboardEvent'
+import { workspaceMonogram } from '../workspaceMonogram'
+import { formatUsageCost } from '../formatUsageCost'
 
 // Neutral monogram for a workspace — matches the sidebar treatment (no per-item color noise).
-function initials(title: string | undefined): string {
-  const t = (title || 'Untitled').trim()
-  if (!t) return 'UG'
-  const parts = t.split(/\s+/).slice(0, 2)
-  return parts.map((p) => p[0]?.toUpperCase() ?? '').join('') || t.slice(0, 2).toUpperCase()
-}
 
 function formatRelativeTime(date: Date): string {
   const diff = Date.now() - date.getTime()
@@ -32,7 +28,7 @@ function formatRelativeTime(date: Date): string {
 }
 
 function formatCost(cost: number): string {
-  return `$${cost.toFixed(4)}`
+  return formatUsageCost(cost)
 }
 
 function AppRow({
@@ -83,7 +79,7 @@ function AppRow({
     >
       {/* Neutral monogram */}
       <div className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-lg bg-kumo-fill text-[12px] font-medium text-kumo-subtle">
-        {initials(gadget.title)}
+        {workspaceMonogram(gadget.title)}
       </div>
 
       {/* Info */}

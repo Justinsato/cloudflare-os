@@ -370,7 +370,11 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
           </div>
         ) : recent.length === 0 ? (
           <p className="px-2.5 py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-inactive">
-            {search ? 'No matches.' : 'No workspaces yet.'}
+            {search
+              ? 'No matches.'
+              : favorites.length > 0
+                ? 'Every workspace is in Favorites.'
+                : 'No workspaces yet.'}
           </p>
         ) : (
           <>
