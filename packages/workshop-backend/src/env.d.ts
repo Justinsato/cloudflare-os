@@ -68,6 +68,9 @@ declare global {
       // Cloudflare Access (SSO). (Also referenced via a local Env extension in server.ts.)
       CF_ACCESS_AUD?: string;   // audience
       CF_ACCESS_ISS?: string;   // team URL, e.g. https://<team>.cloudflareaccess.com
+      // JSON object mapping an Access service token client id to the email of the user it signs
+      // in as; a JSON binding or the same object as a JSON string. Unmapped tokens are refused.
+      ACCESS_SERVICE_TOKEN_EMAILS?: Record<string, string> | string;
 
       // Comma-separated allowlist of gatekeeper vendor ids permitted to drive sign-in (e.g.
       // "google,github,cloudflare"). A listed gatekeeper must also advertise providesAuth. Empty =

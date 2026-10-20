@@ -27,7 +27,7 @@ import { ExternalMessageGateway } from "./external-message-gateway";
 import { RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
 import { handleClientErrorRequest } from "./client-errors.js";
-import { verifyCfAccessJwt } from "./access.js";
+import { accessSessionEmail, parseAccessServiceTokenEmails, verifyCfAccessJwt } from "./access.js";
 import { resolveUiFeatureFlags } from "./feature-flags";
 import { serveSiteLogo, SITE_LOGO_PATH } from "./site-logo.js";
 import { createWorkshopLogger } from "./observability";
@@ -75,6 +75,9 @@ type Env = Cloudflare.Env & {
   // Set these if using Cloudflare Access for authentication, otherwise username/password is used.
   CF_ACCESS_AUD?: string,  // audience
   CF_ACCESS_ISS?: string,  // team URL, i.e. https://<team>.cloudflareaccess.com
+  // Optional JSON object mapping an Access service token client id to the email of the user it
+  // signs in as (see accessSessionEmail in access.ts). Unmapped service tokens are refused.
+  ACCESS_SERVICE_TOKEN_EMAILS?: Record<string, string> | string;
   DEV?: boolean;
   FLAGS?: Flagship;
 }
@@ -701,7 +704,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 
   constructor(private ctx: ExecutionContext, private env: Env,
       private abortSession: (reason: Error) => void,
-      private accessSession?: { payload: JWTPayload; jwt: string }) {
+      private accessSession?: { payload: JWTPayload; jwt: string; email: string }) {
     super();
     this.users = this.ctx.exports.UserDurableObject;
   }
@@ -777,7 +780,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
       throw createAuthError(AUTH_ERROR_CODES.notAuthenticatedWithAccess);
     }
 
-    let email = this.accessSession.payload.email as string;
+    let email = this.accessSession.email;
     let userId = this.users.idFromName(email);
     let signupsEnabled = (await readAdminConfig(this.env)).signupsEnabled;
     let accountCreated =
@@ -940,7 +943,7 @@ export default {
             }));
       }
 
-      let accessSession: { payload: JWTPayload; jwt: string } | undefined;
+      let accessSession: { payload: JWTPayload; jwt: string; email: string } | undefined;
 
       if (env.CF_ACCESS_AUD) {
         if (req.headers.get("Origin") !== url.origin) {
@@ -950,13 +953,19 @@ export default {
         const payload = await verifyCfAccessJwt(req, env);
         if (!payload) return new Response("Invalid CF access JWT.", { status: 403 });
 
-        if (!payload.email) {
+        // A service token's assertion has no email; it signs in as the user it is mapped to in
+        // ACCESS_SERVICE_TOKEN_EMAILS, exactly as that user would through the browser.
+        const email = accessSessionEmail(payload, parseAccessServiceTokenEmails(
+            env.ACCESS_SERVICE_TOKEN_EMAILS,
+            message => logger.warn(message, { event: "access.service_token_emails.invalid" })));
+        if (!email) {
           return new Response("Access JWT didn't specify email address.", { status: 403 });
         }
 
         accessSession = {
           payload,
           jwt: req.headers.get("cf-access-jwt-assertion")!,
+          email,
         };
       }
 
