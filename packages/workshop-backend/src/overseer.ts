@@ -2098,7 +2098,19 @@ class OverseerImpl implements AgentHooks {
   async listWorkspaceOutputs(initiator: AiChatAuthorInfo)
       : Promise<{workspaces: AgentWorkspaceOutputs[], truncated?: true}> {
     let userStub = this.users.get(this.users.idFromName(initiator.id));
-    let outputs = await userStub.readOutputsIndex();
+    // readOutputsIndex is new; a user DO still on an older version answers "does not implement".
+    // listOutputs has always existed and returns the same index (its catch-up sweep is a no-op
+    // once the index is backfilled), so fall back to it rather than fail the tool.
+    let outputs: Awaited<ReturnType<UserDurableObject["readOutputsIndex"]>>;
+    try {
+      outputs = await userStub.readOutputsIndex();
+    } catch (err) {
+      if (!/does not implement/.test(String(err))) throw err;
+      this.logger.warn("readOutputsIndex unavailable, falling back to listOutputs", {
+        event: "agent.list_workspace_outputs.fallback", error: err,
+      });
+      outputs = (await userStub.listOutputs()).outputs;
+    }
     let self = this.ctx.id.toString();
     let byWorkspace = new Map<string, AgentWorkspaceOutputs>();
     let count = 0;
