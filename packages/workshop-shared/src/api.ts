@@ -24,7 +24,7 @@
 // Gadget a stub pointing to the Gadget's server-side Durable Object interface.
 
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
-import { AccountDescription, ActionKind, ActionDescription, AgentCatalog, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription } from "./gatekeeper.js";
+import { AccountDescription, ActionKind, ActionDescription, AgentCatalog, AvatarImage, GatekeeperUiFrame, ObservationDescription, ResourceDescription, ResourceConfiguratorFrame, SupportedResource, VendorDescription, HookDescription, HookStatus } from "./gatekeeper.js";
 import type { CodeChange } from "./code-change.js";
 import type { UiFeatureFlags } from "./feature-flags.js";
 
@@ -2386,6 +2386,96 @@ export type CreationApproval = {
   configuration?: string;
 };
 
+/** A change the agent may ask the workspace owner to make to a hook (requestScheduleChange). */
+export type ScheduleChangeKind = "enable" | "disable" | "delete";
+
+/**
+ * One call the workspace saw into a hook's callback: a real firing, or a manual run
+ * (runScheduleNow). Recorded by the Overseer, which every firing passes through.
+ */
+export type HookRunInfo = {
+  /** When the call started, ISO 8601. */
+  at: string;
+
+  /** The callback method called, e.g. "onSchedule". */
+  method: string;
+
+  outcome: "succeeded" | "failed" | "running";
+
+  /**
+   * Where it failed: the callback itself, or the observation authorization a gatekeeper performs
+   * before calling it.
+   */
+  stage?: "callback" | "authorization";
+
+  /** The error's message, truncated, when it failed. */
+  error?: string;
+
+  durationMs?: number;
+
+  /** The scheduler's runId for the occurrence, when the firing carried one. */
+  runId?: string;
+
+  /** Set for a run started by runScheduleNow rather than by the gatekeeper. */
+  manual?: true;
+};
+
+/** One hook as the listSchedules tool reports it. */
+export type AgentScheduleInfo = {
+  hookId: number;
+  title: string;
+  description: string;
+  enabled: boolean;
+
+  /** The connection that delivers the hook, e.g. "Scheduled Tasks". */
+  connection?: string;
+
+  /** The gadget the hook wakes; title absent when the gadget no longer exists. */
+  gadget: {id: WorkpieceId, title?: string};
+
+  /**
+   * The gatekeeper's own report (HookController.getStatus()): next run, terminal state and
+   * failure code, with times as ISO 8601 strings. Absent for a disabled hook, or when the
+   * gatekeeper reports nothing.
+   */
+  status?: Omit<HookStatus, "nextRunAt" | "endedAt" | "occurrences"> & {
+    nextRunAt?: string;
+    endedAt?: string;
+    occurrences?: {count?: number, until?: string, used?: number};
+  };
+
+  /** Why `status` is missing for an enabled hook, when its gatekeeper couldn't be asked. */
+  statusError?: string;
+
+  /** The most recent call into the callback the workspace saw. */
+  lastRun?: HookRunInfo;
+
+  /** The most recent failed call, which may be older than `lastRun`. */
+  lastFailure?: HookRunInfo;
+};
+
+/** The result of the runScheduleNow tool. */
+export type ScheduleManualRunResult = {
+  hookId: number;
+  title: string;
+  scheduleId: string;
+  runId: string;
+  /** "running" when the callback hadn't settled before the tool stopped waiting. */
+  outcome: "succeeded" | "failed" | "running";
+  error?: string;
+  durationMs?: number;
+  message: string;
+};
+
+/**
+ * One of the initiator's other workspaces, as the listWorkspaceOutputs tool reports it: titles
+ * and output formats only, nothing else from that workspace.
+ */
+export type AgentWorkspaceOutputs = {
+  workspaceTitle: string;
+  gadgets: {title: string, format?: string}[];
+};
+
 export type BoundHookInfo = {
   id: number;
 
@@ -4285,6 +4375,69 @@ export type AiToolCall = {
     alreadyPending?: boolean;
     message: string;
   };
+} | {
+  /**
+   * List every hook ("schedule") in the workspace, with the gadget it wakes, the gatekeeper's
+   * own report of its state (HookController.getStatus(), e.g. the scheduler's next run and
+   * failure code), and the last run and last failure the workspace saw. Read-only.
+   */
+  toolName: "listSchedules";
+  input: {};
+
+  /** The listing as it was when the call ran; replay returns this rather than listing again. */
+  output?: {schedules: AgentScheduleInfo[]};
+} | {
+  /**
+   * Ask the workspace owner to enable, disable or delete a hook. Never applies anything itself:
+   * it queues a pending action (an approval card in the chat), and only the owner's approval
+   * applies it, through the same code path as the Connections toggle and delete.
+   */
+  toolName: "requestScheduleChange";
+  input: {
+    hookId: number;
+    action: ScheduleChangeKind;
+    /** Why, shown to the owner on the approval card. */
+    reason: string;
+  };
+
+  /**
+   * The queued request, recorded when it was made: replay returns this instead of queueing
+   * another. `alreadyPending` is set when the same change to the same hook was still awaiting a
+   * decision, so no new one was queued.
+   */
+  output?: {
+    hookId: number;
+    title: string;
+    action: ScheduleChangeKind;
+    actionId: number;
+    status: "pendingOwnerApproval";
+    alreadyPending?: boolean;
+    message: string;
+  };
+} | {
+  /**
+   * Fire an enabled schedule's callback once, now, with a fresh runId and `manual: true` on the
+   * firing. Doesn't touch the scheduler's own state (cadence, bound, retries). The callback's
+   * writes go through gatekeeper approval as on any firing.
+   */
+  toolName: "runScheduleNow";
+  input: {hookId: number};
+
+  /** What the run did, recorded when it ran; replay returns this and never runs again. */
+  output?: ScheduleManualRunResult;
+} | {
+  /**
+   * List the gadgets in the initiator's other workspaces (from their Outputs index), by
+   * workspace title, gadget title and output format only. Read-only.
+   */
+  toolName: "listWorkspaceOutputs";
+  input: {};
+
+  /**
+   * The listing as it was when the call ran; replay returns this rather than listing again.
+   * `truncated` is set when the index held more gadgets than the tool returns.
+   */
+  output?: {workspaces: AgentWorkspaceOutputs[], truncated?: true};
 } | {
   toolName: "executeCode";
   input: {

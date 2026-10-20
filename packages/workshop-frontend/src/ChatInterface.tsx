@@ -53,6 +53,8 @@ import {
   ArrowUpRight,
   Blueprint,
   GitBranch,
+  Clock,
+  Play,
 } from "@phosphor-icons/react";
 import { RpcStub, RpcTarget } from "capnweb";
 import ReactMarkdown, { type Components } from "react-markdown";
@@ -624,6 +626,17 @@ function getToolCallSummary(
       return { verb: "Created worktree", target: tc.input.title };
     case "renameGadget":
       return { verb: "Renamed gadget", target: tc.input.title };
+    case "listSchedules":
+      return { verb: "Listed schedules" };
+    case "requestScheduleChange":
+      return {
+        verb: `Requested to ${tc.input.action}`,
+        target: tc.output?.title ?? `schedule ${tc.input.hookId}`,
+      };
+    case "runScheduleNow":
+      return { verb: "Ran schedule", target: tc.output?.title ?? `schedule ${tc.input.hookId}` };
+    case "listWorkspaceOutputs":
+      return { verb: "Listed outputs in other workspaces" };
     case "removeGadget":
       return {
         verb: "Requested removal of",
@@ -759,6 +772,15 @@ function describeToolCallCount(toolName: AiToolCall["toolName"], count: number):
       return `Renamed ${pluralize(count, "gadget")}`;
     case "removeGadget":
       return count === 1 ? "Requested a gadget removal" : `Requested ${count} gadget removals`;
+    case "listSchedules":
+      return "Listed schedules";
+    case "requestScheduleChange":
+      return count === 1
+          ? "Requested a schedule change" : `Requested ${count} schedule changes`;
+    case "runScheduleNow":
+      return `Ran ${pluralize(count, "schedule")}`;
+    case "listWorkspaceOutputs":
+      return "Listed outputs in other workspaces";
     case "observeUserChanges":
       return `Observed ${pluralize(count, "change set")}`;
     case "giveUp":
@@ -805,6 +827,13 @@ function getToolIcon(
       return GitBranch;
     case "renameGadget":
       return PencilSimple;
+    case "listSchedules":
+    case "requestScheduleChange":
+      return Clock;
+    case "runScheduleNow":
+      return Play;
+    case "listWorkspaceOutputs":
+      return MagnifyingGlass;
     case "listBlueprints":
       return Blueprint;
     case "observeUserChanges":
@@ -842,6 +871,14 @@ function getProvisionalToolLabel(toolName: AiToolCall["toolName"] | null | undef
       return "Renaming gadget";
     case "removeGadget":
       return "Requesting gadget removal";
+    case "listSchedules":
+      return "Listing schedules";
+    case "requestScheduleChange":
+      return "Requesting schedule change";
+    case "runScheduleNow":
+      return "Running schedule";
+    case "listWorkspaceOutputs":
+      return "Listing outputs in other workspaces";
     case "executeCode":
       return "Running code";
     case "webFetch":
@@ -874,6 +911,10 @@ function getProvisionalToolVerb(toolName: AiToolCall["toolName"]): string {
     case "createWorktree": return "Creating worktree";
     case "renameGadget": return "Renaming gadget";
     case "removeGadget": return "Requesting gadget removal";
+    case "listSchedules": return "Listing schedules";
+    case "requestScheduleChange": return "Requesting schedule change";
+    case "runScheduleNow": return "Running schedule";
+    case "listWorkspaceOutputs": return "Listing outputs in other workspaces";
     case "executeCode": return "Running code";
     case "webFetch": return "Fetching";
     case "observeUserChanges": return "Observing user changes";
@@ -905,6 +946,10 @@ function describeProvisionalToolCount(toolName: AiToolCall["toolName"], count: n
     case "createWorktree": return `Creating ${pluralize(count, "worktree")}`;
     case "renameGadget": return `Renaming ${pluralize(count, "gadget")}`;
     case "removeGadget": return `Requesting ${pluralize(count, "gadget removal")}`;
+    case "listSchedules": return "Listing schedules";
+    case "requestScheduleChange": return `Requesting ${pluralize(count, "schedule change")}`;
+    case "runScheduleNow": return `Running ${pluralize(count, "schedule")}`;
+    case "listWorkspaceOutputs": return "Listing outputs in other workspaces";
     case "observeUserChanges": return `Observing ${pluralize(count, "change set")}`;
     case "giveUp": return "Stopping";
     case "listBlueprints": return "Listing blueprints";

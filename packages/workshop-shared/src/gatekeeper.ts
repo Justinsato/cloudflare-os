@@ -1561,7 +1561,53 @@ export interface HookController<Hook extends RpcTarget> extends WorkerEntrypoint
    * However, the overseer can also call enable() again in the future.
    */
   disable(): Promise<void>;
+
+  /**
+   * Optional. Report the gatekeeper-side state of this hook, for display to the workspace (its
+   * agent's `listSchedules` tool). Read-only: it must not change any state. Return null when the
+   * gatekeeper keeps no state for the hook (e.g. it is disabled). Gatekeepers that don't
+   * implement it are treated as reporting nothing.
+   */
+  getStatus?(): Promise<HookStatus | null>;
 }
+
+/**
+ * What a gatekeeper reports about one of its hooks (see HookController.getStatus()). Plain data,
+ * shown to the workspace's agent. Times are Unix epoch milliseconds.
+ */
+export type HookStatus = {
+  /** The gatekeeper's own id for the registration behind the hook, e.g. a schedule id. */
+  externalId?: string;
+
+  /**
+   * A short state word. Scheduled Tasks reports "active" (can still run or retry), "dead"
+   * (callback retries exhausted), "completed" (a one-shot ran, or a bounded recurrence used its
+   * bound), "expired" (a firing window passed without delivery), or "inactive" (no live state,
+   * as for a disabled hook).
+   */
+  state: string;
+
+  /** Human-readable cadence, e.g. "every 15 minutes" or "daily at 07:00". */
+  cadence?: string;
+
+  /** IANA timezone the cadence is expressed in, when it uses wall-clock time. */
+  timeZone?: string;
+
+  /** Next planned run (or retry, when `retrying`), when one is known. */
+  nextRunAt?: number;
+
+  /** Set when `nextRunAt` is a retry of a failed attempt, not a new occurrence. */
+  retrying?: boolean;
+
+  /** When the hook reached its terminal `state` (failed, completed or expired). */
+  endedAt?: number;
+
+  /** Fixed, non-sensitive failure stage code, e.g. "callback_failed". */
+  failureCode?: string;
+
+  /** A finite bound on runs, and how much of it is used. */
+  occurrences?: {count?: number, until?: number, used?: number};
+};
 
 /**
  * Object passed to HookController.enable(), used to inform the overseer when a hook event occurs.
