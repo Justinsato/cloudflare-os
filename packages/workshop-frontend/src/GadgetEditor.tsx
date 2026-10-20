@@ -831,6 +831,14 @@ export default function GadgetEditor() {
   const showFullEditor = layoutModeReady && (
     showingActivity || (hasVisibleWorkpieces && (workspaceView === null ? !simpleMode : workspaceView.mode === 'app'))
   )
+  // Pane geometry. A URL naming a visible gadget, or a remembered open app pane, always ends in the
+  // split layout (simple mode, the one input still pending, only applies with no view chosen), so
+  // reserve the split from the first paint instead of drawing the chat full width and shrinking it
+  // once the chat list and code state land.
+  const urlNamesVisibleWorkpiece = urlWorkpieceId !== null &&
+    visibleWorkpieces.some(w => w.id === urlWorkpieceId)
+  const splitLayout = showFullEditor || (!layoutModeReady && hasVisibleWorkpieces &&
+    (urlNamesVisibleWorkpiece || workspaceView?.mode === 'app'))
   const showOutputRail = layoutModeReady && hasAnyApps && !showFullEditor
   const paneShowsActivity = showingActivity || activityClosing
   useEffect(() => {
@@ -1834,9 +1842,9 @@ export default function GadgetEditor() {
 
         {/* ── LEFT: Chat pane ──────────────────────────────────────────────────── */}
         <div
-          className={`flex flex-col flex-shrink-0 max-md:!w-full ${showFullEditor ? 'max-md:hidden' : ''} ${workspaceTransitionClass} ${showFullEditor ? 'border-r border-kumo-line' : ''}`}
+          className={`flex flex-col flex-shrink-0 max-md:!w-full ${splitLayout ? 'max-md:hidden' : ''} ${workspaceTransitionClass} ${splitLayout ? 'border-r border-kumo-line' : ''}`}
           style={{
-            width: showFullEditor
+            width: splitLayout
               ? chatWidth
               : `calc(100% - ${outputRailWidth}px)`,
           }}
@@ -1899,7 +1907,7 @@ export default function GadgetEditor() {
         {/* ── Resize handle ───────────────────────────────────────────────────── */}
         <div
           className={`relative flex-shrink-0 touch-none cursor-col-resize overflow-visible bg-kumo-line max-md:hidden ${workspaceTransitionClass}`}
-          style={{ width: showFullEditor ? 1 : 0 }}
+          style={{ width: splitLayout ? 1 : 0 }}
           onPointerDown={handleResizePointerDown}
           onPointerMove={handleResizePointerMove}
           onPointerUp={handleResizePointerUp}
@@ -1910,10 +1918,10 @@ export default function GadgetEditor() {
 
         {/* ── RIGHT: App / Code / Connections tabs ───────────────────────────── */}
         <div
-          className={`flex flex-shrink-0 min-w-0 overflow-hidden bg-kumo-base max-md:!w-full max-md:!opacity-100 ${!showFullEditor ? 'max-md:hidden' : ''} ${workspaceTransitionClass}`}
+          className={`flex flex-shrink-0 min-w-0 overflow-hidden bg-kumo-base max-md:!w-full max-md:!opacity-100 ${!splitLayout ? 'max-md:hidden' : ''} ${workspaceTransitionClass}`}
           style={{
-            width: showFullEditor ? `calc(100% - ${chatWidth}px - 1px)` : 0,
-            opacity: showFullEditor ? 1 : 0,
+            width: splitLayout ? `calc(100% - ${chatWidth}px - 1px)` : 0,
+            opacity: splitLayout ? 1 : 0,
           }}
         >
           <div className="flex flex-col flex-1 min-w-0 overflow-hidden">
