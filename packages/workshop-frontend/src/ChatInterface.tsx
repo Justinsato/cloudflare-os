@@ -125,6 +125,7 @@ import { UnresolvedConflictsDialog } from "./features/chat/UnresolvedConflictsDi
 import { BlueprintProposalNotice } from "./features/blueprint-updates/BlueprintProposalNotice";
 import { appliedBlueprintMerges } from "./features/blueprint-updates/blueprintProposal";
 import { formatUsageCost } from "./formatUsageCost";
+import CaddiePlanCard, { ChatQuickReplyContext, parseCaddiePlan } from "./features/chat/CaddiePlanCard";
 
 /**
  * The selected chat's live (accepted but not yet materialized) change row stream, delivered via
@@ -1211,6 +1212,12 @@ function CodeBlock({ children, ...props }: ComponentPropsWithoutRef<"pre">) {
       typeof children.props.children === "string"
     ? children.props.children.replace(/\n$/, "")
     : "";
+  // A ```caddie-plan block is Caddie's proposed change: draw it as a card with Confirm and Cancel.
+  const language = isValidElement<{ className?: string }>(children) ? children.props.className : undefined;
+  if (language?.split(" ").includes("language-caddie-plan")) {
+    const plan = parseCaddiePlan(code);
+    if (plan) return <CaddiePlanCard plan={plan} />;
+  }
 
   return (
     <div className={styles.codeBlock}>
@@ -5568,8 +5575,12 @@ function ChatInterface({
     </div>
   );
 
+  // Cards inside agent messages (the Caddie plan card) answer through this, as a typed reply.
+  const quickReply = { send: (text: string) => { void handleSend(text); }, busy: isAgentActive };
+
   // ─── main render ─────────────────────────────────────────────────────────────
   return (
+    <ChatQuickReplyContext.Provider value={quickReply}>
     <div
       className={`flex h-full bg-kumo-base ${sidebarMode ? "flex-row" : "flex-col"}`}
     >
@@ -6771,6 +6782,7 @@ function ChatInterface({
         onClose={() => setUsageModalOpen(false)}
       />
     </div>
+    </ChatQuickReplyContext.Provider>
   );
 }
 
