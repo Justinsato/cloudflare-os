@@ -19,6 +19,7 @@ import { RpcStub, RpcTarget } from 'capnweb'
 import { sortByGadgetOrder } from '@gadgets/workshop-shared/gadget-order'
 import { applyGadgetMove, type GadgetMove } from './gadgetReorder'
 import GadgetSwitcher from './GadgetSwitcher'
+import WorkspaceSwitcher from './WorkspaceSwitcher'
 import { useAuthenticatedApi } from './AuthContext'
 import { useConnectionLost, useRpcStub } from './RpcContext'
 import UserMenu from './components/UserMenu'
@@ -1377,6 +1378,12 @@ export default function GadgetEditor() {
     authenticatedApi.whoami().then(setUserInfo).catch(() => {})
   }, [authenticatedApi])
 
+  // ── workspace switcher ────────────────────────────────────────────────────────
+  const loadWorkspaceList = useCallback(() => authenticatedApi.listGadgets(), [authenticatedApi])
+  const openWorkspace = useCallback((workspaceId: string) => {
+    navigate({ to: '/workspace/$id', params: { id: workspaceId } })
+  }, [navigate])
+
   // ── title save/cancel ─────────────────────────────────────────────────────────
   const titleSaveInFlight = useRef(false)
   const handleSaveTitle = async () => {
@@ -1555,9 +1562,12 @@ export default function GadgetEditor() {
             </div>
           ) : (
             <div className="flex items-center gap-1 min-w-0">
-              <span className="text-[14px] leading-5 font-medium tracking-[-0.25px] text-kumo-default truncate">
-                {metadata.title}
-              </span>
+              <WorkspaceSwitcher
+                currentId={id!}
+                currentTitle={metadata.title}
+                loadWorkspaces={loadWorkspaceList}
+                onSelect={openWorkspace}
+              />
               <span className="hidden md:inline-flex">
                 <WorkshopIconButton
                   onClick={() => setIsEditingTitle(true)}
