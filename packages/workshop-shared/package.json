@@ -35,6 +35,10 @@
       "types": "./src/gadget-order.ts",
       "import": "./src/gadget-order.ts"
     },
+    "./workspace-home": {
+      "types": "./src/workspace-home.ts",
+      "import": "./src/workspace-home.ts"
+    },
     "./theme": {
       "types": "./src/theme.ts",
       "import": "./src/theme.ts"

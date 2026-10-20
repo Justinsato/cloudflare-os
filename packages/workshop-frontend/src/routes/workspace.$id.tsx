@@ -9,6 +9,8 @@ type GadgetSearch = {
   // Show the chat even where the workspace pane hides it (a notification's "Open task" asks for
   // this). The editor drops it once honoured.
   showChat?: true
+  // The selected gadget's view state, `<gadgetId>:<query>` (see gadgetViewParam.ts).
+  view?: string
 }
 
 function parseIntParam(value: unknown): number | undefined {
@@ -28,5 +30,6 @@ export const Route = createFileRoute('/workspace/$id')({
       : undefined,
     w: parseIntParam(search.w),
     showChat: search.showChat === true || undefined,
+    view: typeof search.view === 'string' && search.view !== '' ? search.view : undefined,
   }),
 })

@@ -37,6 +37,9 @@ type Props = {
   // Use-role subscriptions receive gadgets only (worktrees, like pending gadgets, are withheld).
   gadgets: GadgetSummary[]
   onSelectGadget: (id: WorkpieceId) => void
+  // The selected gadget's view state from the URL, and where it reports a new one (see GadgetUI).
+  viewState?: string
+  onViewStateChange?: (state: string) => void
   metadata: GadgetMetadata
   authenticatedApi: RpcStub<AuthenticatedApi>
   currentUserId: string | null
@@ -51,6 +54,8 @@ export default function GadgetUseView({
   selectedGadgetId,
   gadgets,
   onSelectGadget,
+  viewState,
+  onViewStateChange,
   metadata,
   authenticatedApi,
   currentUserId,
@@ -153,6 +158,8 @@ export default function GadgetUseView({
             gadget={gadget}
             height="100%"
             isVisible={true}
+            viewState={viewState}
+            onViewStateChange={onViewStateChange}
             onOpenWorkpiece={target => {
               const match = gadgets.find(g => g.id === target.id) ??
                   (target.title !== undefined ? gadgets.find(g => g.title === target.title) : undefined)

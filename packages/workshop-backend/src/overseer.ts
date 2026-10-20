@@ -47,6 +47,7 @@ import {
 import { AgentGadgetInfo, AgentHooks, SeedBindingInfo, alwaysAvailableResources, formatMissingBlueprintBindings, runAgent, summarizeArgs, type AgentStepChange, type AiChatMessageBodyWithModelData, type ChatHistory, type WorktreeTurnAccess, GIT_BINDING_NAME } from "./agent";
 import { WorktreeSessionImpl } from "./worktree-session";
 import { GitImpl } from "./git-binding";
+import { WORKSPACE_BINDING_NAME, WORKSPACE_BINDING_TYPES, WorkspaceImpl } from "./workspace-binding";
 import { scanWorkpieceForGrep, type GrepScan } from "./grep";
 import WORKTREE_BINDING_TYPES from "./worktree-binding.txt";
 import { deploymentOutputForBlueprint, FormatOffer, listFormatOffers, readAdminConfig } from "./admin-config";
@@ -1532,7 +1533,7 @@ class OverseerImpl implements AgentHooks {
   bindWorkpiece(gadgetId: WorkpieceId, name: string, target: WorkpieceId,
                 chatId?: number): void {
     validateBindingName(name);
-    if (name === "GADGET" || name === GIT_BINDING_NAME) {
+    if (name === "GADGET" || name === GIT_BINDING_NAME || name === WORKSPACE_BINDING_NAME) {
       throw new Error(`The binding name \`${name}\` is reserved.`);
     }
     let gadget = this.getGadgetRecord(gadgetId);
@@ -1600,7 +1601,8 @@ class OverseerImpl implements AgentHooks {
     }
     if (oldName === newName) return;
     validateBindingName(newName);
-    if (newName === "GADGET" || newName === GIT_BINDING_NAME) {
+    if (newName === "GADGET" || newName === GIT_BINDING_NAME ||
+        newName === WORKSPACE_BINDING_NAME) {
       throw new Error(`The binding name \`${newName}\` is reserved.`);
     }
     if (gadget.bindings[newName]) {
@@ -2597,6 +2599,9 @@ class OverseerImpl implements AgentHooks {
     // shadows it (see bindWorkpiece). The agent's describeBinding tool mirrors this order when
     // describing a gadget's bindings (see describeBinding in agent.ts).
     env[GIT_BINDING_NAME] = this.makeBindingLoopback({type: "git"}, caller);
+    // Likewise beneath the named bindings: a gadget that bound something as WORKSPACE before the
+    // name was reserved keeps seeing its own binding.
+    env[WORKSPACE_BINDING_NAME] = this.makeBindingLoopback({type: "workspace"}, caller);
     for (let [name, edge] of this.visibleBindings(gadget, forChatId)) {
       env[name] = this.makeBindingLoopback({type: "gatekeeper", id: edge.target}, caller);
     }
@@ -5214,6 +5219,20 @@ class OverseerImpl implements AgentHooks {
       case "git":
         return Promise.resolve(new GitImpl(this, () => this.#gitAuthorFor(caller)));
 
+      case "workspace": {
+        // The read-only env.WORKSPACE (workspace-binding.ts), minted only into gadget envs. The
+        // caller's chat scopes which provisional gadgets it sees, exactly as for its bindings.
+        if (caller.from !== "gadget") {
+          throw new Error("The Workspace binding is only available to gadgets.");
+        }
+        let host = {
+          listWorkpieces: () => this.storage.gadgets.list(),
+          getGadgetOrder: () => this.storage.gadgetOrder.get(),
+        };
+        return Promise.resolve(new WorkspaceImpl(
+            host, caller.chatId, caller.gadgetId ?? this.defaultGadgetId));
+      }
+
       default:
         target satisfies never;
         throw new TypeError("Unknown binding target type.");
@@ -6623,6 +6642,19 @@ class OverseerImpl implements AgentHooks {
         `\n` +
         `\`\`\`\n` +
         `${worktreeAgentApiText()}` +
+        `\`\`\`\n`;
+  }
+
+  // Describe a gadget's env.WORKSPACE binding, for the agent's describeBinding tool.
+  describeWorkspaceBinding(envName: string): string {
+    return `Binding: ${envName}\n` +
+        `\n` +
+        `This binding is a read-only view of the workspace's gadget list. It is present in every ` +
+        `Gadget's env, so Gadget code can use it without adding a binding. It implements the ` +
+        `\`Workspace\` interface as defined below:\n` +
+        `\n` +
+        `\`\`\`\n` +
+        WORKSPACE_BINDING_TYPES +
         `\`\`\`\n`;
   }
 
@@ -10272,6 +10304,9 @@ type BindingLoopbackTarget = {
 } | {
   // The `env.GIT` binding (see git-binding.ts).
   type: "git";
+} | {
+  // The `env.WORKSPACE` binding (see workspace-binding.ts).
+  type: "workspace";
 };
 
 /**

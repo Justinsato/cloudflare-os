@@ -24,7 +24,7 @@ vi.mock('@cloudflare/kumo', () => ({
   Text: ({ children }: { children: ReactNode }) => children,
 }))
 
-import GadgetUI from './GadgetUI'
+import GadgetUI, { MAX_GADGET_VIEW_STATE_LENGTH } from './GadgetUI'
 
 interface TestGadget {
   read(): string
@@ -619,7 +619,7 @@ describe('GadgetUI open-workpiece requests', () => {
   }
 
   it('passes an id or title from its own frame to the parent', async () => {
-    const open = vi.fn()
+    const open = vi.fn<(target: { id?: number; title?: string }) => void>()
     const iframe = await renderWith(open)
     post(iframe.contentWindow, { type: 'open-workpiece', id: 30 })
     post(iframe.contentWindow, { type: 'open-workpiece', title: 'Tracker · Hold · Materials Receipts · Live' })
@@ -628,7 +628,7 @@ describe('GadgetUI open-workpiece requests', () => {
   })
 
   it('ignores requests from another frame, another origin, or with no usable target', async () => {
-    const open = vi.fn()
+    const open = vi.fn<(target: { id?: number; title?: string }) => void>()
     const iframe = await renderWith(open)
     post(window, { type: 'open-workpiece', id: 30 })
     post(iframe.contentWindow, { type: 'open-workpiece', id: 30 }, 'https://evil.example')
@@ -643,5 +643,53 @@ describe('GadgetUI open-workpiece requests', () => {
     expect(injected).toContain("type: 'open-workpiece'")
     expect(injected).toContain('data-workpiece-id')
     expect(injected).toContain('data-workpiece-title')
+  })
+})
+
+describe('GadgetUI view state', () => {
+  let container: HTMLDivElement
+  let root: Root
+
+  beforeEach(() => {
+    container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+  })
+
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    container.remove()
+  })
+
+  async function renderWith(viewState: string | undefined, onViewStateChange: (state: string) => void) {
+    const gadget = fakeGadget('home', 'document.body.textContent = "home"')
+    await act(async () => {
+      root.render(<GadgetUI gadget={gadget.stub} height="100px" viewState={viewState}
+        onViewStateChange={onViewStateChange} />)
+    })
+    await vi.waitFor(() => expect(container.querySelector('iframe')).not.toBeNull())
+    return container.querySelector('iframe')!
+  }
+
+  function post(source: Window | null, data: unknown, origin = 'null') {
+    window.dispatchEvent(new MessageEvent('message', { data, origin, source }))
+  }
+
+  it('hands the frame the view state the page opened with', async () => {
+    const iframe = await renderWith('sort=id&dir=desc', vi.fn())
+    const injected = decodeURIComponent(iframe.srcdoc)
+    expect(injected).toContain('let __gadgetViewState = "sort=id&dir=desc";')
+    expect(injected).toContain("type: 'view-state'")
+  })
+
+  it('reports view state its own frame saves, and ignores anything else', async () => {
+    const saved = vi.fn<(state: string) => void>()
+    const iframe = await renderWith(undefined, saved)
+    post(iframe.contentWindow, { type: 'view-state', state: 'sort=title&dir=asc' })
+    post(window, { type: 'view-state', state: 'from=page' })
+    post(iframe.contentWindow, { type: 'view-state', state: 'x' }, 'https://evil.example')
+    post(iframe.contentWindow, { type: 'view-state', state: 42 })
+    post(iframe.contentWindow, { type: 'view-state', state: 'q='.padEnd(MAX_GADGET_VIEW_STATE_LENGTH + 1, 'a') })
+    expect(saved.mock.calls).toEqual([['sort=title&dir=asc']])
   })
 })
