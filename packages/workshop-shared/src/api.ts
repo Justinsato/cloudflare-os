@@ -213,6 +213,12 @@ export interface NotificationSubscriber extends RpcTarget {
 export type GatekeeperVendorFilter = {
   /** Filter for vendors that can connect to the given resource. */
   resourceUrl?: string,
+  /**
+   * Also list ambient vendors (VendorDescription.autoProvisionsAccount) that aren't admin-disabled,
+   * with no supported resources. The connection picker offers these as one-click connections
+   * (Overseer.newAmbientGatekeeper); the agent's connectable-vendor list leaves them out.
+   */
+  includeAmbient?: boolean,
 };
 
 /** Options for subscribing to connected accounts. */
@@ -2661,6 +2667,15 @@ export interface Overseer extends RpcTarget {
    * `LanguageModelBinding`, a decision model's a `DecisionModelBinding`.
    */
   newAiModelGatekeeper(modelId: string): Promise<GatekeeperClient<any>>;
+
+  /**
+   * Returns this workspace's connection to an ambient gatekeeper (one whose vendor sets
+   * VendorDescription.autoProvisionsAccount), so the caller can bind it to a gadget. Provisions the
+   * owner's account for the vendor first if needed. The connection is the workspace's shared ambient
+   * record, the same one the agent binds with setGadgetBinding, so callers must not remove() it.
+   * Owner only; throws if the vendor is admin-disabled.
+   */
+  newAmbientGatekeeper(vendorId: string): Promise<GatekeeperClient<any>>;
 
   /**
    * Create a new gatekeeper for an agent spawner binding. This allows the gadget to

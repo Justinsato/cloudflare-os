@@ -326,11 +326,11 @@ it("mainline binding edits reload the running gadget's environment", async () =>
     };
 
     await app.bind("DATA", firstId);
-    expect(await envKeys()).toEqual(["DATA", "GADGET", "GIT"]);
+    expect(await envKeys()).toEqual(["DATA", "GADGET", "GIT", "WORKSPACE"]);
     await expect(app.bind("DATA", suggestedId)).rejects.toThrow('There is already a binding named "DATA".');
 
     expect(await app.bindWithSuggestedName(suggestedId)).toBe("TEST_THING");
-    expect(await envKeys()).toEqual(["DATA", "GADGET", "GIT", "TEST_THING"]);
+    expect(await envKeys()).toEqual(["DATA", "GADGET", "GIT", "TEST_THING", "WORKSPACE"]);
 
     const annotation = {
       title: "Suggested test thing",
@@ -340,10 +340,10 @@ it("mainline binding edits reload the running gadget's environment", async () =>
     await app.setBlueprintAnnotation("TEST_THING", annotation);
     await app.renameBinding("TEST_THING", "RENAMED");
     expect(await app.getBlueprintAnnotation("RENAMED")).toEqual(annotation);
-    expect(await envKeys()).toEqual(["DATA", "GADGET", "GIT", "RENAMED"]);
+    expect(await envKeys()).toEqual(["DATA", "GADGET", "GIT", "RENAMED", "WORKSPACE"]);
 
     await app.unbind("RENAMED");
-    expect(await envKeys()).toEqual(["DATA", "GADGET", "GIT"]);
+    expect(await envKeys()).toEqual(["DATA", "GADGET", "GIT", "WORKSPACE"]);
   });
 });
 

@@ -1272,6 +1272,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
           ]);
           let enabledResources =
               filterEnabledResources(config, id, supportedResources);
+          if (filter.includeAmbient && description.autoProvisionsAccount &&
+              ambientGatekeeperMode(config, id) !== "disabled") {
+            // Ambient vendors advertise no resources; the picker connects them in one step.
+            return {id, description, supportedResources: enabledResources};
+          }
           if (enabledResources.length == 0) {
             // Every resource for this vendor is disabled (or it advertised none) — hide the vendor.
             return null;

@@ -51,7 +51,7 @@ vi.mock('./ResourceConfiguratorHost', async () => {
   return { default: ResourceConfiguratorHost }
 })
 
-import GatekeeperModal from './GatekeeperModal'
+import GatekeeperModal, { type GatekeeperModalProps } from './GatekeeperModal'
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -74,11 +74,15 @@ function authenticatedApi(): RpcStub<AuthenticatedApi> {
   const vendor = { displayName: 'Service catalog', url: 'https://catalog.example.com/' }
   return {
     listModels: async (kind?: ModelKind) => kind === 'decision' ? [DECISION_MODEL] : [CHAT_MODEL],
-    listGatekeeperVendors: async () => [{
+    listGatekeeperVendors: async (filter?: { includeAmbient?: boolean }) => [{
       id: 'catalog',
       description: vendor,
       supportedResources: [RESOURCE],
-    }],
+    }, ...(filter?.includeAmbient ? [{
+      id: 'cockpit',
+      description: { displayName: 'Cockpit', description: 'Portfolio data', autoProvisionsAccount: true },
+      supportedResources: [],
+    }] : [])],
     subscribeConnectedAccounts: (subscriber: ConnectedAccountsSubscriber) => {
       subscriber.add(1, {
         displayName: 'Catalog account',
@@ -105,7 +109,8 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-async function renderModal(props: { initialVendorId?: string, initialResourceUrlPattern?: string } = {}) {
+async function renderModal(props: Partial<Pick<GatekeeperModalProps,
+    'initialVendorId' | 'initialResourceUrlPattern' | 'getOverseer' | 'onCreated' | 'onClose'>> = {}) {
   testState.authenticatedApi = authenticatedApi()
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -160,5 +165,42 @@ describe('GatekeeperModal model pickers', () => {
       const heading = option.closest('[role="group"]')?.getAttribute('aria-labelledby')
       return heading ? `${document.getElementById(heading)!.textContent}: ${option.textContent}` : option.textContent
     })).toEqual(options)
+  })
+})
+
+describe('GatekeeperModal ambient gatekeepers', () => {
+  it('lists an ambient vendor and adds it in one step', async () => {
+    const gatekeeper = { [Symbol.dispose]: vi.fn<() => void>() }
+    const newAmbientGatekeeper = vi.fn<(vendorId: string) => Promise<typeof gatekeeper>>(
+      async () => gatekeeper)
+    const onCreated = vi.fn<(gk: unknown) => Promise<void>>(async () => {})
+    const onClose = vi.fn<() => void>()
+    await renderModal({
+      getOverseer: () => ({ newAmbientGatekeeper }) as unknown as ReturnType<GatekeeperModalProps['getOverseer']>,
+      onCreated: onCreated as GatekeeperModalProps['onCreated'],
+      onClose,
+    })
+
+    const group = await vi.waitFor(() => {
+      const button = document.body.querySelector<HTMLButtonElement>(
+        '[aria-controls="connection-group-panel-vendor:cockpit"]')
+      expect(button).not.toBeNull()
+      return button!
+    })
+    await act(async () => group.click())
+    await act(async () => document.getElementById('connection-group-panel-vendor:cockpit')!
+      .querySelector('button')!.click())
+
+    // No account chooser or resource configurator: the connection is ready to add.
+    expect(document.body.querySelector('[data-testid="resource-configurator"]')).toBeNull()
+    const addConnection = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+      .find(button => button.textContent === 'Add connection')!
+    expect(addConnection.disabled).toBe(false)
+    await act(async () => addConnection.click())
+
+    expect(newAmbientGatekeeper).toHaveBeenCalledWith('cockpit')
+    expect(onCreated).toHaveBeenCalledWith(gatekeeper)
+    expect(onClose).toHaveBeenCalled()
+    expect(gatekeeper[Symbol.dispose]).not.toHaveBeenCalled()
   })
 })

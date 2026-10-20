@@ -251,6 +251,7 @@ export const useComposerResources = ({
   const attachCreated = async (gatekeeper: RpcStub<GatekeeperClient<any>>) => {
     const source = attachSnapshotRef.current;
     let inserted = false;
+    let shared = false;
     try {
       if (!source || attachSnapshotRef.current !== source) return;
       const [gatekeeperId, description, creationSpec] = await Promise.all([
@@ -258,8 +259,12 @@ export const useComposerResources = ({
         gatekeeper.describe(),
         gatekeeper.getCreationSpec(),
       ]);
+      // An ambient connection is the workspace's shared record, not one minted for this prompt, so
+      // it must survive a failed insert.
+      if (creationSpec.type === "ambient") shared = true;
       if (!source || attachSnapshotRef.current !== source) return;
-      const vendorId = creationSpec.type === "gatekeeper" ? creationSpec.vendorId : undefined;
+      const vendorId = creationSpec.type === "gatekeeper" || creationSpec.type === "ambient"
+        ? creationSpec.vendorId : undefined;
       const result = commitDocumentEdit(source.snapshot, (document) => {
         const position = currentPresentationPosition(source.snapshot, document, source.position);
         return position === null ? null : insertComposerCapsule(
@@ -281,7 +286,7 @@ export const useComposerResources = ({
       if (attachSnapshotRef.current !== source) return;
       throw error;
     } finally {
-      if (!inserted) await removeUnusedGatekeeper(gatekeeper);
+      if (!inserted && !shared) await removeUnusedGatekeeper(gatekeeper);
       gatekeeper[Symbol.dispose]();
     }
   };

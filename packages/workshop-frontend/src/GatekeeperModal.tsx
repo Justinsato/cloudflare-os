@@ -77,6 +77,7 @@ type ConnectionTypeId =
   | 'ai-model'
   | 'agent-spawner'
   | `resource:${string}:${string}`
+  | `ambient:${string}`
 
 type ConnectionType = {
   id: ConnectionTypeId
@@ -104,6 +105,9 @@ type ConnectionType = {
   resourceUrlPattern?: string
   // Whether this resource type is independently grantable.
   grantable?: boolean
+  // An ambient gatekeeper (VendorDescription.autoProvisionsAccount): no account to pick and no
+  // resource to configure, so the connection is added in one step (Overseer.newAmbientGatekeeper).
+  ambient?: boolean
 }
 
 type VendorOption = {
@@ -164,6 +168,30 @@ function connectionForResource(vendor: VendorOption, resource: SupportedResource
     resourceUrlPattern: resource.urlPattern,
     grantable: Boolean(resource.grantable),
   }
+}
+
+// An ambient vendor advertises no resources, so it gets one connection type for the whole service.
+function connectionForAmbientVendor(vendor: VendorOption): ConnectionType {
+  return {
+    id: `ambient:${vendor.id}`,
+    vendorId: vendor.id,
+    groupKey: `vendor:${vendor.id}`,
+    groupLabel: vendor.description.displayName,
+    title: vendor.description.displayName,
+    vendor: vendor.description.displayName,
+    description: vendor.description.description ?? `Use ${vendor.description.displayName} from this gadget.`,
+    icon: Database,
+    logoUrl: vendor.description.logo?.url,
+    accent: vendor.description.color,
+    ambient: true,
+  }
+}
+
+function connectionsForVendor(vendor: VendorOption): ConnectionType[] {
+  if (vendor.supportedResources.length === 0) {
+    return vendor.description.autoProvisionsAccount ? [connectionForAmbientVendor(vendor)] : []
+  }
+  return vendor.supportedResources.map(resource => connectionForResource(vendor, resource))
 }
 
 // The grantable resource `urlPattern`s a connection requires before its configurator can load.
@@ -245,8 +273,7 @@ export default function GatekeeperModal({
   const siteName = useSiteName()
   const allConnections = useMemo(() => [
     ...platformConnectionTypes(siteName),
-    ...vendors.flatMap(vendor => vendor.supportedResources
-      .map(resource => connectionForResource(vendor, resource))),
+    ...vendors.flatMap(connectionsForVendor),
   ], [siteName, vendors])
 
   const selectedConnection = useMemo(
@@ -387,7 +414,7 @@ export default function GatekeeperModal({
       toasts.add({ title: "Couldn't load AI models", variant: 'error' })
     })
 
-    authenticatedApi.listGatekeeperVendors().then(vendors => {
+    authenticatedApi.listGatekeeperVendors({ includeAmbient: true }).then(vendors => {
       if (cancelled) return
       setVendors(vendors)
     }).catch(err => {
@@ -493,7 +520,7 @@ export default function GatekeeperModal({
   const selectedAccount = matchingAccounts.find(
     account => account.id === selectedAccountId && account.credentialsValid,
   ) ?? null
-  const needsAccount = Boolean(selectedConnection?.vendorId)
+  const needsAccount = Boolean(selectedConnection?.vendorId) && !selectedConnection?.ambient
 
   // When the agent's request supplied a concrete resource URL that matches the selected resource
   // type's pattern, pass it to the configurator so its form opens pre-filled (and editable). This
@@ -704,6 +731,29 @@ export default function GatekeeperModal({
     }
   }
 
+  const handleCreateAmbientConnection = async () => {
+    if (creating) return
+    const vendorId = selectedConnection?.ambient ? selectedConnection.vendorId : undefined
+    if (!vendorId) return
+    setCreating(true)
+    let gatekeeper: RpcStub<GatekeeperClient<any>> | null = null
+    let transferred = false
+    try {
+      const overseer = await getOverseer()
+      gatekeeper = await overseer.newAmbientGatekeeper(vendorId)
+      await onCreated(gatekeeper)
+      transferred = true
+      onClose()
+    } catch (err) {
+      console.error('Failed to add ambient connection:', err)
+      reportIssue('gatekeeper.ambient-add', err, { gatekeeperVendorId: vendorId })
+      toasts.add({ title: err instanceof Error && err.message ? err.message : 'Failed to add connection', variant: 'error' })
+    } finally {
+      if (gatekeeper && !transferred) gatekeeper[Symbol.dispose]()
+      setCreating(false)
+    }
+  }
+
   const handleCreateResourceConnection = async () => {
     if (creating) return
     if (!selectedConnection || selectedAccountId === null) return
@@ -740,6 +790,7 @@ export default function GatekeeperModal({
   const canCreate = (() => {
     if (!selectedConnection) return false
     if (selectedConnection.id === 'ai-model') return Boolean(selectedModelId)
+    if (selectedConnection.ambient) return true
     if (selectedConnection.id === 'agent-spawner') {
       return Boolean(spawnerDisplayName.trim()) && !spawnerEnvError
     }
@@ -764,12 +815,14 @@ export default function GatekeeperModal({
       handleCreateAiModel()
     } else if (selectedConnection.id === 'agent-spawner') {
       handleCreateAgentSpawner()
+    } else if (selectedConnection.ambient) {
+      handleCreateAmbientConnection()
     } else if (selectedConnection.resourceUrlPattern) {
       handleCreateResourceConnection()
     }
   }
 
-  const createLabel = selectedConnection?.resourceUrlPattern
+  const createLabel = selectedConnection?.resourceUrlPattern || selectedConnection?.ambient
     ? 'Add connection'
     : 'Create connection'
 
