@@ -150,6 +150,31 @@ window.addEventListener('click', (event) => {
   anchor.setAttribute('rel', Array.from(rel).join(' '));
 }, true);
 
+// Tell the parent once the frame shows something, so it can drop its loading cover. "Something"
+// is a rendered element with text or media; a gadget's own loading text counts. Re-checked on
+// every DOM change and on resize (a frame laid out while hidden has no boxes yet).
+{
+  const MEDIA = 'img,svg,canvas,video,iframe,input,button,select,textarea,table';
+  let reported = false;
+  const shows = (el) => {
+    if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'TEMPLATE') return false;
+    const box = el.getBoundingClientRect();
+    if (box.width <= 0 || box.height <= 0) return false;
+    return el.matches(MEDIA) || el.textContent.trim() !== '' || el.querySelector(MEDIA) !== null;
+  };
+  const check = () => {
+    if (reported || !document.body || !Array.from(document.body.children).some(shows)) return;
+    reported = true;
+    observer.disconnect();
+    window.removeEventListener('resize', check);
+    requestAnimationFrame(() => window.parent.postMessage({ type: 'painted' }, '*'));
+  };
+  const observer = new MutationObserver(check);
+  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  window.addEventListener('resize', check);
+  setTimeout(check, 0);
+}
+
 // Capture unhandled exceptions and promise rejections.
 window.addEventListener('error', (event) => {
   window.parent.postMessage({
@@ -214,6 +239,9 @@ interface GadgetUIProps {
 // How long to wait for a UI bundle before offering a retry instead of a spinner. Not a latency
 // budget: the point at which we conclude the reply is never coming.
 const UI_BUNDLE_LOAD_TIMEOUT_MS = 20_000
+// How long the loading cover stays over a frame that never reports content (a gadget that draws
+// nothing, or an old bundle without the paint check). After this the frame shows as it is.
+const PAINT_COVER_TIMEOUT_MS = 10_000
 const RECONNECT_TIMEOUT_MS = 5_000
 
 export default function GadgetUI(props: GadgetUIProps) {
@@ -274,6 +302,18 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     () => uiCode === null ? null : createSandboxedHtml(uiCode, viewStateRef.current, themeRef.current),
     // oxlint-disable-next-line exhaustive-deps -- rebuilt per frame load: reloadTrigger and iframeGeneration key the frame. The theme is posted live rather than rebuilding (and reloading) the frame.
     [uiCode, reloadTrigger, iframeGeneration])
+
+  // The frame HTML that has reported content (see the paint check in the injected prefix). The
+  // cover shows over the frame until the current HTML has painted.
+  const [paintedHtml, setPaintedHtml] = useState<string | null>(null)
+  const sandboxedHtmlRef = useRef(sandboxedHtml)
+  sandboxedHtmlRef.current = sandboxedHtml
+  const painted = sandboxedHtml !== null && paintedHtml === sandboxedHtml
+  useEffect(() => {
+    if (sandboxedHtml === null || !isVisible) return
+    const timeout = setTimeout(() => setPaintedHtml(sandboxedHtml), PAINT_COVER_TIMEOUT_MS)
+    return () => clearTimeout(timeout)
+  }, [sandboxedHtml, isVisible])
 
   // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
   // result must not keep counting while the replacement load is pending.
@@ -509,6 +549,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           level: event.data.level,
           message: event.data.message,
         })
+      } else if (event.data?.type === 'painted') {
+        setPaintedHtml(sandboxedHtmlRef.current)
       } else if (event.data?.type === 'escape') {
         onIframeEscapeRef.current?.()
       } else if (event.data?.type === 'open-workpiece') {
@@ -545,17 +587,10 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     )
   }
 
-  if (loading) {
-    return (
-      <div style={{
-        height,
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center'
-      }}>
-        <Loader size="lg" />
-      </div>
-    )
+  // Until the first bundle reply, the view is loading: the load effect sets `loading` only after
+  // the first paint, which would otherwise flash the "No gadget UI yet" placeholder.
+  if (loading || (!hasLoaded && !error)) {
+    return <GadgetLoading height={height} />
   }
 
   if (error) {
@@ -624,7 +659,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   }
 
   return (
-    <div style={{ height, width: '100%' }}>
+    <div className="relative" style={{ height, width: '100%' }}>
+      {!painted && <GadgetLoading height="100%" overlay />}
       <iframe
         key={`${reloadTrigger}:${iframeGeneration}`}
         ref={iframeRef}
@@ -641,6 +677,22 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
         title="Gadget UI"
       />
+    </div>
+  )
+}
+
+// The pane's loading state, shown while the UI bundle loads and then over the frame until the
+// gadget paints, so the pane never sits blank.
+function GadgetLoading({ height, overlay = false }: { height: string; overlay?: boolean }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className={`flex flex-col items-center justify-center gap-3 bg-kumo-base ${overlay ? 'absolute inset-0 z-[1]' : ''}`}
+      style={{ height }}
+    >
+      <Loader size="lg" />
+      <Text variant="secondary">Loading view…</Text>
     </div>
   )
 }
