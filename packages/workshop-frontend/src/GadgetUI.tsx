@@ -3,6 +3,8 @@ import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
 import { GadgetClient, ConsoleLogEvent } from '@gadgets/workshop-shared/api'
+import { useOptionalTheme } from './ThemeContext'
+import type { ResolvedThemeMode } from './theme'
 
 // We want to inject Cap'n Web into the Gadget. Luckily it has no dependencies, so we can just take
 // the whole module and embed it. We can import the module using ?raw to get a string of the
@@ -24,6 +26,31 @@ let CAPNWEB_BUNDLE_ANNOTATED = `//# sourceURL=jsrpc.js\n${CAPNWEB_BUNDLE}`
 // (from a massive data URL) and sets up the RPC connection to the parent.
 let INJECTED_CODE_PREFIX = encodeURIComponent(String.raw`//# sourceURL=client.js
 import { RpcTarget, RpcStub, newMessagePortRpcSession } from "data:text/javascript;charset=utf-8;base64,${btoa(CAPNWEB_BUNDLE_ANNOTATED)}";
+
+// The workspace's light/dark mode. The workspace has one theme switch and every gadget follows
+// it: the frame opens with __gadgetTheme (declared ahead of this prefix, see createSandboxedHtml),
+// and the parent posts {type: 'theme', theme} whenever it changes. Gadgets style both modes with
+// @media (prefers-color-scheme: dark) or :root[data-theme="dark"], read window.gadgetTheme, or
+// listen for the 'gadget-theme' event. Installed before the handshake so the parent's first post
+// can't arrive ahead of the listener.
+{
+  let current = __gadgetTheme === 'dark' ? 'dark' : 'light';
+  const applyTheme = (theme) => {
+    current = theme;
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+  };
+  applyTheme(current);
+  Object.defineProperty(window, 'gadgetTheme', { get: () => current, enumerable: true });
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent) return;
+    const data = event.data;
+    if (!data || data.type !== 'theme' || (data.theme !== 'light' && data.theme !== 'dark')) return;
+    if (data.theme === current) return;
+    applyTheme(data.theme);
+    window.dispatchEvent(new CustomEvent('gadget-theme', { detail: { theme: data.theme } }));
+  });
+}
 
 let gadget;  // RPC stub to the gadget's server-side Durable Object.
 {
@@ -145,11 +172,12 @@ window.addEventListener('unhandledrejection', (event) => {
 /** The longest view state a gadget may keep in the page URL; longer ones are ignored. */
 export const MAX_GADGET_VIEW_STATE_LENGTH = 2000
 
-const createSandboxedHtml = (jsCode: string, viewState: string): string => {
+const createSandboxedHtml = (jsCode: string, viewState: string, theme: ResolvedThemeMode): string => {
   const viewStateDeclaration =
-    encodeURIComponent(`let __gadgetViewState = ${JSON.stringify(viewState)};\n`)
+    encodeURIComponent(`let __gadgetViewState = ${JSON.stringify(viewState)};\nconst __gadgetTheme = ${JSON.stringify(theme)};\n`)
+  // The theme is also on <html> so the first paint, before any script runs, is in the right mode.
   return `<!DOCTYPE html>
-<html>
+<html data-theme="${theme}" style="color-scheme: ${theme}">
 <head>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src 'none'; script-src data: 'unsafe-inline'; style-src data: 'unsafe-inline'; img-src data:; media-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';">
@@ -192,7 +220,17 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
+// Outside a ThemeProvider (isolated renders), follow whatever mode the page applied.
+function documentThemeMode(): ResolvedThemeMode {
+  return document.documentElement.getAttribute('data-mode') === 'dark' ? 'dark' : 'light'
+}
+
 function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange, onOpenWorkpiece, viewState, onViewStateChange }: GadgetUIProps) {
+  // The workspace's resolved light/dark mode, which every gadget frame follows.
+  const themeContext = useOptionalTheme()
+  const resolvedTheme: ResolvedThemeMode = themeContext?.resolvedThemeMode ?? documentThemeMode()
+  const themeRef = useRef(resolvedTheme)
+  themeRef.current = resolvedTheme
   // The loaded UI bundle's client code; the frame's HTML is built from it per frame load.
   const [uiCode, setUiCode] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -233,8 +271,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   // frame reload (a reconnect, a code change) restores it from here.
   const viewStateRef = useRef(viewState ?? '')
   const sandboxedHtml = useMemo(
-    () => uiCode === null ? null : createSandboxedHtml(uiCode, viewStateRef.current),
-    // oxlint-disable-next-line exhaustive-deps -- rebuilt per frame load: reloadTrigger and iframeGeneration key the frame.
+    () => uiCode === null ? null : createSandboxedHtml(uiCode, viewStateRef.current, themeRef.current),
+    // oxlint-disable-next-line exhaustive-deps -- rebuilt per frame load: reloadTrigger and iframeGeneration key the frame. The theme is posted live rather than rebuilding (and reloading) the frame.
     [uiCode, reloadTrigger, iframeGeneration])
 
   // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
@@ -401,6 +439,13 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   // The LSP error is due to bugs that need to be fixed in Cap'n Web.
   }, [gadget, isVisible, hasLoaded, isInvalidated, chatId, retryNonce])
 
+  // Tell the frame about theme changes without reloading it. Parent-to-child counterpart of the
+  // escape/console messages: posted only to our own frame's window, and the prefix accepts it only
+  // from window.parent. The target origin is "*" because a sandboxed frame's origin is opaque.
+  useEffect(() => {
+    iframeRef.current?.contentWindow?.postMessage({ type: 'theme', theme: resolvedTheme }, '*')
+  }, [resolvedTheme])
+
   // Effect to handle iframe RPC handshake
   useEffect(() => {
     let cancelled = false
@@ -417,6 +462,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
 
       if (event.data === 'handshake' && event.ports && event.ports[0]) {
         const port = event.ports[0]
+        // The frame's listener is up by now. Re-send the theme in case it changed between building
+        // the srcdoc and the frame loading, when a post would have reached the blank document.
+        iframeRef.current?.contentWindow?.postMessage({ type: 'theme', theme: themeRef.current }, '*')
         let gadgetStub: any = null
         resetConnection(new Error('Gadget iframe reloaded.'))
         const generation = connectionGenerationRef.current
@@ -585,7 +633,10 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           display: 'block',
           width: '100%',
           height: '100%',
-          border: 'none'
+          border: 'none',
+          // Chromium derives the embedded document's prefers-color-scheme from this, so gadgets
+          // styled with @media (prefers-color-scheme: dark) follow the workspace switch.
+          colorScheme: resolvedTheme,
         }}
         sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
         title="Gadget UI"
