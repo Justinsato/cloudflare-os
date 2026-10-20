@@ -12,6 +12,7 @@ import {
 } from '@gadgets/workshop-shared/api'
 import GadgetUI from './GadgetUI'
 import UserMenu from './components/UserMenu'
+import ThemeModeButton from './components/ThemeModeButton'
 import { GadgetPresence } from './components/GadgetPresence'
 import TopBarNotice from './TopBarNotice'
 import SiteLogo from './components/SiteLogo'
@@ -126,6 +127,7 @@ export default function GadgetUseView({
               currentUserId={currentUserId}
             />
           </span>
+          <ThemeModeButton />
           <UserMenu />
         </div>
       </div>

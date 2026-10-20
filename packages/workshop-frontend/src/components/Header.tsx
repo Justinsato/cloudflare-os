@@ -5,6 +5,7 @@ import { useGatekeeperApps } from '../useGatekeeperApps'
 import { useSiteName } from '../ServerConfigContext'
 import { useState, useEffect, useRef } from 'react'
 import UserMenu from './UserMenu'
+import ThemeModeButton from './ThemeModeButton'
 import TopBarNotice from '../TopBarNotice'
 import SiteLogo from './SiteLogo'
 
@@ -97,7 +98,8 @@ export default function Header() {
         <div className="flex items-center gap-2">
           {/* Desktop avatar dropdown */}
           {auth && (
-            <div className="hidden sm:block">
+            <div className="hidden items-center gap-2 sm:flex">
+              <ThemeModeButton />
               <UserMenu />
             </div>
           )}

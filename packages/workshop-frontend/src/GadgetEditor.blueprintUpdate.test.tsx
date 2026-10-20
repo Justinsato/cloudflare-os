@@ -147,6 +147,7 @@ vi.mock('./components/DeleteConfirmationDialog', () => ({ default: () => null })
 vi.mock('./components/ReconnectingChip', () => ({ default: () => null }))
 vi.mock('./components/SiteLogo', () => ({ default: () => null }))
 vi.mock('./components/UserMenu', () => ({ default: () => null }))
+vi.mock('./components/ThemeModeButton', () => ({ default: () => null }))
 vi.mock('./components/WorkspaceOpenErrorPage', () => ({ default: () => null }))
 
 import GadgetEditor from './GadgetEditor'
