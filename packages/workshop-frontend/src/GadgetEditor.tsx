@@ -23,6 +23,7 @@ import WorkspaceSwitcher from './WorkspaceSwitcher'
 import { useAuthenticatedApi } from './AuthContext'
 import { useConnectionLost, useRpcStub } from './RpcContext'
 import UserMenu from './components/UserMenu'
+import ThemeModeButton from './components/ThemeModeButton'
 import SiteLogo from './components/SiteLogo'
 
 import {
@@ -1675,6 +1676,7 @@ export default function GadgetEditor() {
               chatId={previewChatId}
             />
           </span>
+          <ThemeModeButton />
           <UserMenu />
         </div>
       </div>
