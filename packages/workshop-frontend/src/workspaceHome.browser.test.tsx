@@ -60,8 +60,8 @@ describe('Workspace Home snippet', () => {
     const onConsoleLog = (log: ConsoleLogEvent) => {
       if (log.level === 'log') reports.push(JSON.parse(log.message[0]!))
     }
-    const open = vi.fn()
-    const saved = vi.fn()
+    const open = vi.fn<(target: { id?: number; title?: string }) => void>()
+    const saved = vi.fn<(state: string) => void>()
     await act(async () => {
       root.render(<GadgetUI gadget={gadgetServing(homeWithProbe(actions))} height="300px"
         viewState={viewState} onViewStateChange={saved} onOpenWorkpiece={open}

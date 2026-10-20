@@ -51,6 +51,7 @@ export function listWorkspaceGadgets(host: WorkspaceBindingHost, chatId: number 
   return sortByGadgetOrder(visible, host.getGadgetOrder());
 }
 
+/** The RpcTarget behind a gadget's `env.WORKSPACE` session. */
 export class WorkspaceImpl extends RpcTarget {
   constructor(private host: WorkspaceBindingHost, private chatId: number | undefined,
               private selfId: WorkpieceId | undefined) {

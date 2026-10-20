@@ -619,7 +619,7 @@ describe('GadgetUI open-workpiece requests', () => {
   }
 
   it('passes an id or title from its own frame to the parent', async () => {
-    const open = vi.fn()
+    const open = vi.fn<(target: { id?: number; title?: string }) => void>()
     const iframe = await renderWith(open)
     post(iframe.contentWindow, { type: 'open-workpiece', id: 30 })
     post(iframe.contentWindow, { type: 'open-workpiece', title: 'Tracker · Hold · Materials Receipts · Live' })
@@ -628,7 +628,7 @@ describe('GadgetUI open-workpiece requests', () => {
   })
 
   it('ignores requests from another frame, another origin, or with no usable target', async () => {
-    const open = vi.fn()
+    const open = vi.fn<(target: { id?: number; title?: string }) => void>()
     const iframe = await renderWith(open)
     post(window, { type: 'open-workpiece', id: 30 })
     post(iframe.contentWindow, { type: 'open-workpiece', id: 30 }, 'https://evil.example')
@@ -683,7 +683,7 @@ describe('GadgetUI view state', () => {
   })
 
   it('reports view state its own frame saves, and ignores anything else', async () => {
-    const saved = vi.fn()
+    const saved = vi.fn<(state: string) => void>()
     const iframe = await renderWith(undefined, saved)
     post(iframe.contentWindow, { type: 'view-state', state: 'sort=title&dir=asc' })
     post(window, { type: 'view-state', state: 'from=page' })

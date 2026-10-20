@@ -21,7 +21,7 @@ const isDraft = (workpiece: WorkpieceSummary) =>
   workpiece.type === 'gadget' && workpiece.chatId !== undefined
 
 export interface GadgetSwitcherProps {
-  // In the workspace's saved order; the list keeps that order within each group.
+  /** In the workspace's saved order; the list keeps that order within each group. */
   workpieces: readonly WorkpieceSummary[]
   selectedId: WorkpieceId | null
   onSelect: (id: WorkpieceId) => void

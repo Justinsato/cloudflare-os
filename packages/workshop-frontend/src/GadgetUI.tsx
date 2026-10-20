@@ -142,7 +142,7 @@ window.addEventListener('unhandledrejection', (event) => {
 
 `);
 
-// The longest view state a gadget may keep in the page URL; longer ones are ignored.
+/** The longest view state a gadget may keep in the page URL; longer ones are ignored. */
 export const MAX_GADGET_VIEW_STATE_LENGTH = 2000
 
 const createSandboxedHtml = (jsCode: string, viewState: string): string => {

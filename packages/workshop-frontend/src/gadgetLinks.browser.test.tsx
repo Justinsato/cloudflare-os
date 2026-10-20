@@ -39,7 +39,7 @@ describe('links between gadgets', () => {
   })
 
   it('opens the target gadget for each supported link form, and leaves other links alone', async () => {
-    const open = vi.fn()
+    const open = vi.fn<(target: { id?: number; title?: string }) => void>()
     const html = [
       '<a data-click href="https://mofohub.com/workspace/abc123?w=7">url</a>',
       '<a data-click href="#w=8">hash</a>',

@@ -5,6 +5,7 @@
 // The agent's system prompt shows this code verbatim, and workshop-frontend's browser tests run it
 // in a real gadget frame, so the snippet agents copy is the one that is tested.
 
+/** The Workspace Home's server.js. */
 export const WORKSPACE_HOME_SERVER_JS = `\
 // server.js
 import { DurableObject } from "cloudflare:workers";
@@ -15,6 +16,7 @@ export class Gadget extends DurableObject {
 }
 `;
 
+/** The Workspace Home's client.js. */
 export const WORKSPACE_HOME_CLIENT_JS = `\
 // client.js
 let columns = [
