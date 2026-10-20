@@ -91,6 +91,7 @@ export const ChatComposer = ({
   onConsumeConsoleLogs = () => "",
   onDiscardConsoleLogs = () => {},
   newChat = false,
+  assistantName,
   offerFormats = false,
   autoFocus = false,
   minRows = 2,
@@ -130,6 +131,8 @@ export const ChatComposer = ({
   onConsumeConsoleLogs?: () => string;
   onDiscardConsoleLogs?: () => void;
   newChat?: boolean;
+  /** Who answers in this workspace (site config), named in the placeholder: "Ask Caddie…". */
+  assistantName?: string;
   /**
    * Whether the composer offers the deployment's standard formats. A chosen format rides along as
    * an instruction on the message; it does not change which workspace is created. Only meaningful
@@ -790,8 +793,8 @@ export const ChatComposer = ({
                   : isAgentActive
                     ? "Waiting for agent…"
                     : newChat
-                      ? "Start a new conversation…"
-                      : "Ask a follow-up…"
+                      ? (assistantName ? `Ask ${assistantName}…` : "Start a new conversation…")
+                      : (assistantName ? `Ask ${assistantName} a follow-up…` : "Ask a follow-up…")
               }
               autoFocus={autoFocus}
               rows={minRows}

@@ -2554,6 +2554,12 @@ interface ChatInterfaceProps {
   // proposes nothing); see AiChatMetadata.proposedChangeWorkpieces.
   onSelectedChatProposedChangesChange?: (workpieceIds: readonly WorkpieceId[]) => void;
   constrainChatWidth?: boolean;
+  // A control for the pane itself (the workspace's collapse button), drawn at the right of the
+  // chat list header and the conversation header.
+  headerAction?: React.ReactNode;
+  // Who answers in this workspace, from the site config ("Caddie" in Back9 Trades). Names the
+  // composer placeholder; unset keeps the generic copy.
+  assistantName?: string;
   // Opens a workpiece the transcript offers (a created gadget's app, a created worktree's code).
   onOpenGadget: (workpieceId: WorkpieceId) => void;
 
@@ -2746,6 +2752,8 @@ function ChatInterface({
   onAnyChatProposedChangesChange,
   onSelectedChatProposedChangesChange,
   constrainChatWidth,
+  headerAction,
+  assistantName,
   onOpenGadget,
   outputOfWorkpiece,
 }: ChatInterfaceProps) {
@@ -5363,6 +5371,7 @@ function ChatInterface({
             })}
           </DropdownMenu.Content>
         </DropdownMenu>
+        {headerAction && <div className="ml-auto flex items-center">{headerAction}</div>}
       </div>
       {/* Chat list */}
       <div className="chat-panel flex-1 overflow-y-auto bg-kumo-base p-3">
@@ -5534,6 +5543,7 @@ function ChatInterface({
           {/* Attachments and pending resource operations belong to this workspace's composer. */}
           <ChatComposer
             key={workspaceId}
+            assistantName={assistantName}
             createCapsuleGatekeeper={(accountId, url) =>
               overseer.newGatekeeper(accountId, url)
             }
@@ -5695,6 +5705,7 @@ function ChatInterface({
                   >
                     <Trash size={14} />
                   </WorkshopIconButton>
+                  {headerAction}
                 </div>
               )}
 
@@ -6535,6 +6546,7 @@ function ChatInterface({
                   {/* Remount all transient composer state when the conversation changes. */}
                   <ChatComposer
                     key={`${workspaceId}:${selectedChatId}`}
+                    assistantName={assistantName}
                     chatKey={selectedChatId}
                     createCapsuleGatekeeper={(accountId, url) =>
                       overseer.newGatekeeper(accountId, url)
