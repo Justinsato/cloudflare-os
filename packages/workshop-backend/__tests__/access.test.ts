@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { accessRateLimitKey, verifyCfAccessJwt } from "../src/access.js";
+import {
+  accessRateLimitKey, accessSessionEmail, parseAccessServiceTokenEmails, verifyCfAccessJwt,
+} from "../src/access.js";
 
 const joseMocks = vi.hoisted(() => ({
   createRemoteJWKSet: vi.fn(() => vi.fn()),
@@ -72,5 +74,59 @@ describe("accessRateLimitKey", () => {
     const emailKey = await accessRateLimitKey({ email: "person@example.com" });
     expect(emailKey).toMatch(/^access-email:[0-9a-f]{64}$/);
     expect(emailKey).not.toContain("person@example.com");
+  });
+});
+
+describe("parseAccessServiceTokenEmails", () => {
+  const clientId = "2e9cfbe14b2edfb0fef58e0129a11a71.access";
+
+  it("reads a JSON string or an object binding", () => {
+    const json = JSON.stringify({ [clientId]: "person@example.com" });
+    expect([...parseAccessServiceTokenEmails(json)]).toEqual([[clientId, "person@example.com"]]);
+    expect([...parseAccessServiceTokenEmails({ [clientId]: "person@example.com" })])
+      .toEqual([[clientId, "person@example.com"]]);
+  });
+
+  it("treats an unset value as no mappings without warning", () => {
+    const warn = vi.fn();
+    expect(parseAccessServiceTokenEmails(undefined, warn).size).toBe(0);
+    expect(parseAccessServiceTokenEmails("", warn).size).toBe(0);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("treats invalid JSON and non-object values as no mappings and warns", () => {
+    for (const raw of ["{not json", "[]", "\"person@example.com\"", "42", "null", ["x"]]) {
+      const warn = vi.fn();
+      expect(parseAccessServiceTokenEmails(raw, warn).size).toBe(0);
+      expect(warn).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("skips entries whose email is not a non-empty string", () => {
+    const warn = vi.fn();
+    const map = parseAccessServiceTokenEmails(
+      JSON.stringify({ good: "person@example.com", empty: "", number: 7 }), warn);
+    expect([...map]).toEqual([["good", "person@example.com"]]);
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("accessSessionEmail", () => {
+  const mappings = new Map([["token-id.access", "person@example.com"]]);
+
+  it("uses the email of a user assertion", () => {
+    expect(accessSessionEmail({ email: "user@example.com" }, mappings)).toBe("user@example.com");
+  });
+
+  it("maps a known service token to its user", () => {
+    expect(accessSessionEmail({ common_name: "token-id.access", sub: "" }, mappings))
+      .toBe("person@example.com");
+  });
+
+  it("refuses unknown service tokens and assertions with neither claim", () => {
+    expect(accessSessionEmail({ common_name: "other.access" }, mappings)).toBeNull();
+    expect(accessSessionEmail({ common_name: "token-id.access" }, new Map())).toBeNull();
+    expect(accessSessionEmail({ sub: "user-1" }, mappings)).toBeNull();
+    expect(accessSessionEmail({ email: "", common_name: 5 }, mappings)).toBeNull();
   });
 });
