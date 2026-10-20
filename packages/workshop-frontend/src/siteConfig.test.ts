@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { parseSiteConfig } from './siteConfig'
 
 describe('parseSiteConfig', () => {
+  it('reads per-workspace assistant names', () => {
+    expect(parseSiteConfig({ workspaces: { abc: { assistantName: 'Caddie' }, def: { assistantName: 3 } } }).workspaces)
+      .toEqual({ abc: { assistantName: 'Caddie' } })
+  })
+
   it('returns nothing for a missing or malformed config', () => {
     expect(parseSiteConfig(undefined)).toEqual({})
     expect(parseSiteConfig('x')).toEqual({})

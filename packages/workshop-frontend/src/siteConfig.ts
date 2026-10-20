@@ -38,10 +38,17 @@ export interface NavConfig {
   buildSection?: boolean
 }
 
+/** Per-workspace settings, keyed by workspace id. */
+export interface WorkspaceSiteConfig {
+  /** Who answers in this workspace's chat, named in the composer ("Caddie"). */
+  assistantName?: string
+}
+
 /** Everything a deployment can set. */
 export interface SiteConfig {
   home?: HomeConfig
   nav?: NavConfig
+  workspaces?: Record<string, WorkspaceSiteConfig>
 }
 
 const isString = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
@@ -90,11 +97,22 @@ function parseNav(v: unknown): NavConfig | undefined {
   return { groups, buildSection: n.buildSection === true }
 }
 
+function parseWorkspaces(v: unknown): Record<string, WorkspaceSiteConfig> | undefined {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return undefined
+  const out: Record<string, WorkspaceSiteConfig> = {}
+  for (const [id, entry] of Object.entries(v as Record<string, unknown>)) {
+    if (!entry || typeof entry !== 'object') continue
+    const name = (entry as Record<string, unknown>).assistantName
+    if (isString(name)) out[id] = { assistantName: name }
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
 /** Parses a site config object; unknown or malformed parts are dropped. */
 export function parseSiteConfig(raw: unknown): SiteConfig {
   if (!raw || typeof raw !== 'object') return {}
   const r = raw as Record<string, unknown>
-  return { home: parseHome(r.home), nav: parseNav(r.nav) }
+  return { home: parseHome(r.home), nav: parseNav(r.nav), workspaces: parseWorkspaces(r.workspaces) }
 }
 
 let cached: SiteConfig | null = null

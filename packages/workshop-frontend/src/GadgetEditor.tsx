@@ -13,6 +13,8 @@ import {
   DotsThree,
   GitBranch,
   Pulse,
+  SidebarSimple,
+  ChatsCircle,
   type Icon,
 } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget } from 'capnweb'
@@ -80,6 +82,7 @@ import GadgetExportMenu from './GadgetExportMenu'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from './components/menuStyles'
 import { isImeComposing } from './keyboardEvent'
 import { formatUsageCost } from './formatUsageCost'
+import { siteConfig } from './siteConfig'
 
 const NO_GADGETS: ReadonlySet<WorkpieceId> = new Set()
 
@@ -262,6 +265,9 @@ function PaneTab({
 }
 
 const CHAT_WIDTH_STORAGE_KEY = 'gadgets:workshop:chatWidth'
+// Whether the chat pane is collapsed to a rail against the left edge while an output is open.
+const CHAT_COLLAPSED_STORAGE_KEY = 'gadgets:workshop:chatCollapsed'
+const COLLAPSED_CHAT_WIDTH = 44
 // Keep the old key prefix so existing "open" / "closed" preferences can migrate lazily.
 const WORKSPACE_VIEW_STORAGE_KEY_PREFIX = 'gadgets:workshop:workspaceVisibility:'
 const APP_RAIL_EXPANDED_STORAGE_KEY = 'gadgets:workshop:appRailExpanded'
@@ -444,6 +450,16 @@ export default function GadgetEditor() {
 
   // ── layout ───────────────────────────────────────────────────────────────────
   const [chatWidth, setChatWidth] = useState(getInitialChatWidth)
+  const [chatCollapsed, setChatCollapsed] = useState(() => {
+    if (!isBrowser) return false
+    try { return window.localStorage.getItem(CHAT_COLLAPSED_STORAGE_KEY) === '1' } catch { return false }
+  })
+  const toggleChatCollapsed = useCallback(() => {
+    setChatCollapsed(collapsed => {
+      try { window.localStorage.setItem(CHAT_COLLAPSED_STORAGE_KEY, collapsed ? '0' : '1') } catch { /* storage unavailable */ }
+      return !collapsed
+    })
+  }, [])
   const chatWidthRef = useRef(chatWidth)
   const [isResizing, setIsResizing] = useState(false)
   const [chosenTab, setActiveTab] = useState<RightTab>('app')
@@ -839,6 +855,11 @@ export default function GadgetEditor() {
     visibleWorkpieces.some(w => w.id === urlWorkpieceId)
   const splitLayout = showFullEditor || (!layoutModeReady && hasVisibleWorkpieces &&
     (urlNamesVisibleWorkpiece || workspaceView?.mode === 'app'))
+  // The chat collapses to a rail against the left edge only while an output fills the right
+  // pane; with no output open the chat is the whole workspace and stays full.
+  const chatRailOnly = splitLayout && chatCollapsed
+  const paneChatWidth = chatRailOnly ? COLLAPSED_CHAT_WIDTH : chatWidth
+  const assistantName = id === undefined ? undefined : siteConfig().workspaces?.[id]?.assistantName
   const showOutputRail = layoutModeReady && hasAnyApps && !showFullEditor
   const paneShowsActivity = showingActivity || activityClosing
   useEffect(() => {
@@ -1845,14 +1866,54 @@ export default function GadgetEditor() {
           className={`flex flex-col flex-shrink-0 max-md:!w-full ${splitLayout ? 'max-md:hidden' : ''} ${workspaceTransitionClass} ${splitLayout ? 'border-r border-kumo-line' : ''}`}
           style={{
             width: splitLayout
-              ? chatWidth
+              ? paneChatWidth
               : `calc(100% - ${outputRailWidth}px)`,
           }}
         >
+          {chatRailOnly && (
+            <div className="flex h-full flex-col items-center gap-2 bg-kumo-elevated py-2">
+              <button
+                type="button"
+                onClick={toggleChatCollapsed}
+                aria-label="Expand chat"
+                title="Expand chat"
+                className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-kumo-subtle transition-colors hover:bg-kumo-tint hover:text-kumo-default focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-kumo-ring/40"
+              >
+                <SidebarSimple size={15} className="rotate-180" />
+              </button>
+              <button
+                type="button"
+                onClick={toggleChatCollapsed}
+                aria-hidden="true"
+                tabIndex={-1}
+                className="flex cursor-pointer flex-col items-center gap-2 rounded-md px-1 py-2 text-kumo-subtle transition-colors hover:bg-kumo-tint hover:text-kumo-default"
+              >
+                <ChatsCircle size={15} />
+                <span className="text-[11px] font-medium uppercase tracking-[0.08em] [writing-mode:vertical-rl]">
+                  {assistantName ?? 'Chat'}
+                </span>
+                {isAgentActive && (
+                  <span className="h-1.5 w-1.5 rounded-full bg-kumo-brand animate-pulse" />
+                )}
+              </button>
+            </div>
+          )}
           {overseer ? (
-            <div className="flex-1 min-h-0 relative">
+            <div className={`flex-1 min-h-0 relative ${chatRailOnly ? 'hidden' : ''}`}>
               <div className={layoutModeReady ? 'h-full' : 'h-full invisible'}>
                 <ChatInterface
+                  headerAction={splitLayout ? (
+                    <button
+                      type="button"
+                      onClick={toggleChatCollapsed}
+                      aria-label="Collapse chat"
+                      title="Collapse chat"
+                      className="flex h-8 w-8 flex-shrink-0 cursor-pointer items-center justify-center rounded-md text-kumo-inactive transition-colors hover:bg-kumo-tint hover:text-kumo-default focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-kumo-ring/40 max-md:hidden"
+                    >
+                      <SidebarSimple size={15} />
+                    </button>
+                  ) : undefined}
+                  assistantName={assistantName}
                   key={id}
                   workspaceId={id}
                   overseer={overseer.stub}
@@ -1897,7 +1958,7 @@ export default function GadgetEditor() {
                 </div>
               )}
             </div>
-          ) : (
+          ) : !chatRailOnly && (
             <div className="flex-1 flex items-center justify-center">
               <div className="w-6 h-6 border-2 border-kumo-brand border-t-transparent rounded-full animate-spin" />
             </div>
@@ -1906,9 +1967,9 @@ export default function GadgetEditor() {
 
         {/* ── Resize handle ───────────────────────────────────────────────────── */}
         <div
-          className={`relative flex-shrink-0 touch-none cursor-col-resize overflow-visible bg-kumo-line max-md:hidden ${workspaceTransitionClass}`}
+          className={`relative flex-shrink-0 touch-none overflow-visible bg-kumo-line max-md:hidden ${chatRailOnly ? '' : 'cursor-col-resize'} ${workspaceTransitionClass}`}
           style={{ width: splitLayout ? 1 : 0 }}
-          onPointerDown={handleResizePointerDown}
+          onPointerDown={chatRailOnly ? undefined : handleResizePointerDown}
           onPointerMove={handleResizePointerMove}
           onPointerUp={handleResizePointerUp}
           onPointerCancel={handleResizePointerUp}
@@ -1920,7 +1981,7 @@ export default function GadgetEditor() {
         <div
           className={`flex flex-shrink-0 min-w-0 overflow-hidden bg-kumo-base max-md:!w-full max-md:!opacity-100 ${!splitLayout ? 'max-md:hidden' : ''} ${workspaceTransitionClass}`}
           style={{
-            width: splitLayout ? `calc(100% - ${chatWidth}px - 1px)` : 0,
+            width: splitLayout ? `calc(100% - ${paneChatWidth}px - 1px)` : 0,
             opacity: splitLayout ? 1 : 0,
           }}
         >
