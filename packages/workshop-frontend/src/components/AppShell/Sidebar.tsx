@@ -2,6 +2,7 @@ import { Link } from '@tanstack/react-router'
 import {
   ArrowLeft,
   Blueprint,
+  CaretDown,
   BookOpen,
   Compass,
   Hexagon,
@@ -22,7 +23,11 @@ import {
   SidebarWorkspacesLists,
 } from './SidebarWorkspaces'
 import SidebarUtilityStrip from './SidebarUtilityStrip'
+import { siteConfig } from '../../siteConfig'
+import { useState } from 'react'
 import { inNativeApp, returnToInstalls } from '../../features/native-app/nativeApp'
+
+const BUILD_OPEN_KEY = 'sidebar:build-open'
 
 /**
  * The persistent left rail. Three pinned regions sandwich a single scrolling region of lists, so
@@ -48,6 +53,77 @@ export default function Sidebar({
   // and is connected / enabled for everyone). Disabled or not-yet-connected ones aren't returned, so
   // they simply don't appear. The set is fully dynamic — no gatekeeper is hardcoded.
   const gatekeeperApps = useGatekeeperApps()
+  const buildSection = siteConfig().nav?.buildSection === true
+  // Remembered per browser; starts closed so the rail leads with the work.
+  const [buildOpen, setBuildOpen] = useState(() => {
+    try { return localStorage.getItem(BUILD_OPEN_KEY) === '1' } catch { return false }
+  })
+  const toggleBuild = () => setBuildOpen((open) => {
+    try { localStorage.setItem(BUILD_OPEN_KEY, open ? '0' : '1') } catch { /* storage unavailable */ }
+    return !open
+  })
+
+  const buildItems = (
+    <>
+            <SidebarItem
+              to="/workspaces"
+              label="Workspaces"
+              icon={<SquaresFour size={14} weight="regular" />}
+              collapsed={collapsed}
+            />
+            <SidebarItem
+              to="/blueprints"
+              label="Blueprints"
+              icon={<Blueprint size={14} weight="regular" />}
+              collapsed={collapsed}
+            />
+            {/* Gatekeeper management apps (e.g. the Context Library), listed dynamically. */}
+            {gatekeeperApps.map((app) => {
+              // Escape the icon URL for safe interpolation into a CSS url("…") string.
+              const maskUrl = app.icon
+                ? `url("${app.icon.url.replace(/[\\"]/g, '\\$&')}")`
+                : undefined
+              return (
+              <SidebarItem
+                key={app.id}
+                to="/gatekeepers/$appId"
+                params={{ appId: app.id }}
+                label={app.title}
+                icon={
+                  maskUrl ? (
+                    // Render the (monochrome) app icon as a CSS mask filled with the row's current
+                    // text color, so it tints like the Phosphor icons — subtle by default, accent
+                    // when active, darker on hover.
+                    <span
+                      aria-hidden
+                      className="h-3.5 w-3.5 bg-current"
+                      style={{
+                        maskImage: maskUrl,
+                        WebkitMaskImage: maskUrl,
+                        maskRepeat: 'no-repeat',
+                        WebkitMaskRepeat: 'no-repeat',
+                        maskPosition: 'center',
+                        WebkitMaskPosition: 'center',
+                        maskSize: 'contain',
+                        WebkitMaskSize: 'contain',
+                      }}
+                    />
+                  ) : (
+                    <BookOpen size={14} weight="regular" />
+                  )
+                }
+                collapsed={collapsed}
+              />
+              )
+            })}
+            <SidebarItem
+              to="/explore"
+              label="Explore"
+              icon={<Compass size={14} weight="regular" />}
+              collapsed={collapsed}
+            />
+    </>
+  )
 
   return (
     <aside
@@ -126,68 +202,31 @@ export default function Sidebar({
               collapsed={collapsed}
             />
             <SidebarItem
-              to="/workspaces"
-              label="Workspaces"
-              icon={<SquaresFour size={14} weight="regular" />}
-              collapsed={collapsed}
-            />
-            <SidebarItem
-              to="/blueprints"
-              label="Blueprints"
-              icon={<Blueprint size={14} weight="regular" />}
-              collapsed={collapsed}
-            />
-            <SidebarItem
               to="/outputs"
               label="Outputs"
               icon={<Stack size={14} weight="regular" />}
               collapsed={collapsed}
             />
-            {/* Gatekeeper management apps (e.g. the Context Library), listed dynamically. */}
-            {gatekeeperApps.map((app) => {
-              // Escape the icon URL for safe interpolation into a CSS url("…") string.
-              const maskUrl = app.icon
-                ? `url("${app.icon.url.replace(/[\\"]/g, '\\$&')}")`
-                : undefined
-              return (
-              <SidebarItem
-                key={app.id}
-                to="/gatekeepers/$appId"
-                params={{ appId: app.id }}
-                label={app.title}
-                icon={
-                  maskUrl ? (
-                    // Render the (monochrome) app icon as a CSS mask filled with the row's current
-                    // text color, so it tints like the Phosphor icons — subtle by default, accent
-                    // when active, darker on hover.
-                    <span
-                      aria-hidden
-                      className="h-3.5 w-3.5 bg-current"
-                      style={{
-                        maskImage: maskUrl,
-                        WebkitMaskImage: maskUrl,
-                        maskRepeat: 'no-repeat',
-                        WebkitMaskRepeat: 'no-repeat',
-                        maskPosition: 'center',
-                        WebkitMaskPosition: 'center',
-                        maskSize: 'contain',
-                        WebkitMaskSize: 'contain',
-                      }}
-                    />
-                  ) : (
-                    <BookOpen size={14} weight="regular" />
-                  )
-                }
-                collapsed={collapsed}
-              />
-              )
-            })}
-            <SidebarItem
-              to="/explore"
-              label="Explore"
-              icon={<Compass size={14} weight="regular" />}
-              collapsed={collapsed}
-            />
+            {/* With a site-config Build section, the builder surfaces fold into one collapsible group
+                so the rail leads with Home, Outputs and the workspaces people work in. */}
+            {buildSection && !collapsed ? (
+              <>
+                <button
+                  type="button"
+                  onClick={toggleBuild}
+                  aria-expanded={buildOpen}
+                  className="mt-2 flex h-6 cursor-pointer items-center gap-1 px-1.5 text-[11px] font-medium uppercase tracking-[0.06em] text-kumo-inactive transition-colors hover:text-kumo-subtle"
+                >
+                  <CaretDown
+                    size={10}
+                    weight="bold"
+                    className={['transition-transform', buildOpen ? '' : '-rotate-90'].join(' ')}
+                  />
+                  <span>Build</span>
+                </button>
+                {buildOpen && buildItems}
+              </>
+            ) : buildItems}
           </nav>
 
           {/* Workspace tools: search. Pinned so it's always reachable. */}

@@ -28,6 +28,7 @@ import { useAuthenticatedApi } from '../../AuthContext'
 import ShareModal from '../../ShareModal'
 import DeleteConfirmationDialog from '../DeleteConfirmationDialog'
 import SidebarGadgetRow from './SidebarGadgetRow'
+import { siteConfig, type NavGroup } from '../../siteConfig'
 
 // Cap on items shown in the Recent list before the user clicks through to /workspaces.
 const RECENT_INITIAL_LIMIT = 6
@@ -46,6 +47,8 @@ type WorkspacesContextValue = {
   gadgetsLoading: boolean
   favorites: GadgetMetadataWithTimestamps[]
   recent: GadgetMetadataWithTimestamps[]
+  /** Site-config groups with their matching workspaces; empty when the deployment defines none. */
+  groups: { label: string; items: GadgetMetadataWithTimestamps[] }[]
 
   onTogglePin: (g: GadgetMetadataWithTimestamps) => void
   onRename: (g: GadgetMetadataWithTimestamps, newTitle: string) => void
@@ -122,11 +125,25 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     [needle],
   )
 
+  // Deployment-defined groups (site config), filled in the configured order. Workspaces in a group
+  // leave Favorites and Recent, so each appears in the rail once.
+  const navGroups = useMemo(() => siteConfig().nav?.groups ?? [], [])
+  const groups = useMemo(() => {
+    const byId = new Map(gadgets.map((g) => [g.id, g]))
+    return navGroups.map((group: NavGroup) => ({
+      label: group.label,
+      items: group.workspaceIds
+        .map((id) => byId.get(id))
+        .filter((g): g is GadgetMetadataWithTimestamps => g !== undefined && matchText(g.title)),
+    }))
+  }, [gadgets, matchText, navGroups])
+  const groupedIds = useMemo(() => new Set(navGroups.flatMap((g) => g.workspaceIds)), [navGroups])
+
   const { favorites, recent } = useMemo(() => {
     const favs: GadgetMetadataWithTimestamps[] = []
     const rest: GadgetMetadataWithTimestamps[] = []
     for (const g of gadgets) {
-      if (!matchText(g.title)) continue
+      if (!matchText(g.title) || groupedIds.has(g.id)) continue
       if (g.pinned) favs.push(g)
       else rest.push(g)
     }
@@ -135,7 +152,7 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     favs.sort(byActive)
     rest.sort(byActive)
     return { favorites: favs, recent: rest }
-  }, [gadgets, matchText])
+  }, [gadgets, matchText, groupedIds])
 
   // --- Workspace actions ---------------------------------------------------
 
@@ -215,6 +232,7 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     gadgetsLoading,
     favorites,
     recent,
+    groups,
     onTogglePin,
     onRename,
     onShare,
@@ -294,6 +312,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
     search,
     favorites,
     recent,
+    groups,
     gadgetsLoading,
     onTogglePin,
     onRename,
@@ -303,9 +322,19 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
 
   const [favOpen, setFavOpen] = useState(true)
   const [recentOpen, setRecentOpen] = useState(true)
+  const [closedGroups, setClosedGroups] = useState<ReadonlySet<string>>(() => new Set())
+  const toggleGroup = (label: string) => setClosedGroups((prev) => {
+    const next = new Set(prev)
+    if (next.has(label)) next.delete(label)
+    else next.add(label)
+    return next
+  })
+  const grouped = groups.length > 0
 
   if (collapsed) {
-    const compact = [...favorites, ...recent].slice(0, 8)
+    const compact = grouped
+      ? [...groups.flatMap((g) => g.items), ...favorites, ...recent].slice(0, 12)
+      : [...favorites, ...recent].slice(0, 8)
     return (
       <div className="flex flex-col items-center gap-1.5 px-2">
         {compact.map((g) => (
@@ -328,7 +357,39 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
 
   return (
     <div className="flex flex-col pb-3">
+      {/* Deployment groups, in configured order. */}
+      {groups.map((group) => (group.items.length === 0 && (search || !gadgetsLoading) ? null : (
+        <SidebarSection
+          key={group.label}
+          label={group.label}
+          open={!closedGroups.has(group.label)}
+          onToggle={() => toggleGroup(group.label)}
+        >
+          {gadgetsLoading ? (
+            <div className="flex flex-col gap-1 px-1">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="h-7 rounded-md bg-kumo-elevated animate-pulse" />
+              ))}
+            </div>
+          ) : (
+            <div className="flex flex-col">
+              {group.items.map((g) => (
+                <SidebarGadgetRow
+                  key={g.id}
+                  gadget={g}
+                  onTogglePin={onTogglePin}
+                  onRename={onRename}
+                  onShare={onShare}
+                  onDelete={onDelete}
+                />
+              ))}
+            </div>
+          )}
+        </SidebarSection>
+      )))}
+
       {/* Favorites */}
+      {(!grouped || favorites.length > 0) && (
       <SidebarSection
         label="Favorites"
         count={favorites.length}
@@ -356,9 +417,14 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
         )}
       </SidebarSection>
 
-      {/* Recent workspaces — no count here; the "Show all (N)" link already carries it. */}
+      )}
+
+      {/* Recent workspaces — no count here; the "Show all (N)" link already carries it. With
+          deployment groups, only workspaces outside them land here, and the section hides when
+          there are none. */}
+      {(!grouped || gadgetsLoading || recent.length > 0) && (
       <SidebarSection
-        label="Recent workspaces"
+        label={grouped ? 'Other workspaces' : 'Recent workspaces'}
         open={recentOpen}
         onToggle={() => setRecentOpen((o) => !o)}
       >
@@ -400,6 +466,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
           </>
         )}
       </SidebarSection>
+      )}
     </div>
   )
 }

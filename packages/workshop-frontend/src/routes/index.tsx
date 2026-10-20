@@ -5,6 +5,8 @@ import { useKumoToastManager } from "@cloudflare/kumo";
 import { ChatComposer } from "../features/chat/composer/ChatComposer";
 import MeshBackground from "../components/MeshBackground";
 import HomeTaskSuggestions from "../components/AppShell/HomeTaskSuggestions";
+import HomePriorities from "../components/AppShell/HomePriorities";
+import { siteConfig } from "../siteConfig";
 import { useAuthenticatedApi } from "../AuthContext";
 import { RpcStub } from "capnweb";
 import {
@@ -52,6 +54,8 @@ export function HomePageContent({ prompt }: HomeSearch) {
 
   const { authenticatedApi, currentUser } = useAuthenticatedApi();
   const navigate = useNavigate();
+  // Deployment headline and strategic priorities, when the deploy inlines a site config.
+  const home = siteConfig().home;
   const toasts = useKumoToastManager();
 
   const [models, setModels] = useState<AiChatAuthorInfo[]>([]);
@@ -184,12 +188,21 @@ export function HomePageContent({ prompt }: HomeSearch) {
       <div className="flex w-full max-w-2xl flex-col items-stretch gap-8">
         {/* Hero */}
         <header className="text-center">
+          {home?.eyebrow && (
+            <p className="mb-2 text-[12px] font-medium uppercase tracking-[0.08em] text-kumo-subtle">
+              {home.eyebrow}
+            </p>
+          )}
           <h1 className="text-3xl font-semibold tracking-tight leading-tight text-kumo-default sm:text-4xl">
-            What are we working on?
+            {home?.title ?? "What are we working on?"}
           </h1>
-          <p className="mx-auto mt-3 max-w-md text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
-            Ask a question, create an output, or create an app that works with your tools and data.
-          </p>
+          {(home ? home.subtitle : true) && (
+            <p className="mx-auto mt-3 max-w-md text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
+              {home
+                ? home.subtitle
+                : "Ask a question, create an output, or create an app that works with your tools and data."}
+            </p>
+          )}
         </header>
 
         {/* Composer */}
@@ -213,11 +226,15 @@ export function HomePageContent({ prompt }: HomeSearch) {
         />
 
         {/* A few example work tasks to spark ideas. Picking one seeds the composer above. */}
-        <HomeTaskSuggestions
-          onPick={(suggestion) =>
-            setSeed((prev) => ({ text: suggestion, nonce: (prev?.nonce ?? 0) + 1 }))
-          }
-        />
+        {home ? (
+          <HomePriorities label={home.prioritiesLabel ?? "Priorities"} priorities={home.priorities} />
+        ) : (
+          <HomeTaskSuggestions
+            onPick={(suggestion) =>
+              setSeed((prev) => ({ text: suggestion, nonce: (prev?.nonce ?? 0) + 1 }))
+            }
+          />
+        )}
       </div>
     </div>
   );
