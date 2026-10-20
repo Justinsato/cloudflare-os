@@ -1,4 +1,4 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AgentScheduleInfo, AgentWorkspaceOutputs, ScheduleChangeKind, ScheduleManualRunResult, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange,
   type CodeContent, type CodeChange, type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
@@ -431,6 +431,41 @@ export interface AgentHooks {
       : {actionId: number, title: string, alreadyPending: boolean};
 
   /**
+   * Every bound hook ("schedule") in the workspace: its title, description, enabled flag, the
+   * gadget it wakes, what its gatekeeper reports about it (HookController.getStatus(): next run,
+   * terminal state, failure code), and the last run and last failure recorded as firings passed
+   * through the workspace (including the error's message). Read-only.
+   */
+  listSchedules(): Promise<AgentScheduleInfo[]>;
+
+  /**
+   * Queue a request for the workspace owner to enable, disable or delete a hook, attributed to the
+   * chat's agent: a pending action that the step's action card shows in the chat. Nothing changes
+   * until the owner approves it, which applies it through the same path as the Connections toggle
+   * and delete. If the same change to the same hook is already pending, returns that one
+   * (`alreadyPending`). Throws an agent-readable error for an unknown hook, a change that would do
+   * nothing, or an empty reason.
+   */
+  requestScheduleChange(chatId: number, hookId: number, change: ScheduleChangeKind,
+                        reason: string)
+      : {actionId: number, title: string, alreadyPending: boolean};
+
+  /**
+   * Fire an enabled Scheduled Tasks hook's callback once, now, the way a firing would (admission,
+   * observation authorization, the gadget's onSchedule callback with a fresh runId) and marked
+   * `manual: true`. The scheduler's own state is untouched. Throws an agent-readable error for a
+   * hook that isn't an enabled scheduled task.
+   */
+  runScheduleNow(chatId: number, hookId: number): Promise<ScheduleManualRunResult>;
+
+  /**
+   * The gadgets in the initiator's other workspaces, from their Outputs index: workspace title,
+   * gadget title and output format only. Excludes this workspace. Read-only.
+   */
+  listWorkspaceOutputs(initiator: AiChatAuthorInfo)
+      : Promise<{workspaces: AgentWorkspaceOutputs[], truncated?: true}>;
+
+  /**
    * Whether the workpiece is a worktree: chat-private, git-rooted, read lazily by path. False
    * for gadgets and for ids that no longer resolve.
    */
@@ -674,6 +709,10 @@ Note that users rarely ask for "a Gadget" in those words. They ask for a thing: 
 Tools refer to Gadgets by their binding name in your env: the file tools (\`readFile\`, \`writeFile\`, \`editFile\`, \`grep\`) take a \`workpiece\` parameter naming the Gadget that owns the file, and \`setGadgetBinding\` takes a \`gadget\` parameter naming the Gadget whose bindings to modify. Some older workspaces have a "default" Gadget (noted in the gadget list) which the file tools fall back to when \`workpiece\` is omitted; even so, prefer passing the name explicitly.
 
 To rename a Gadget, use \`renameGadget\`: it changes the title shown in the gadget's tab and on the Outputs page, immediately. Never rename a Gadget to include the workspace's name. To remove a Gadget, use \`removeGadget\`: it only asks the workspace owner, who must approve before anything is removed, and removal is permanent once approved. Both take the gadget's env name (or, for a gadget with no binding in your env, the workpiece id shown in the gadget list).
+
+Before building a new Gadget, call \`listWorkspaceOutputs\` to see what the user already has in their other workspaces. If something there already does what they asked for, tell them where it is instead of building a duplicate here, unless they ask you to build it anyway.
+
+Schedules (hooks that wake a Gadget, such as those registered through the Scheduled Tasks binding) can be inspected with \`listSchedules\`: whether each is enabled, the gadget it wakes, its next run, and how its last run went, including the error when it failed. After registering a schedule, call \`listSchedules\` to confirm it exists and to tell the user it is waiting to be enabled. To enable, disable or delete a schedule, use \`requestScheduleChange\`: it only asks the workspace owner, and nothing changes until they approve. To test an enabled schedule, or to rerun one whose last run failed once you have fixed the cause, use \`runScheduleNow\`.
 
 # Writing Gadgets
 
@@ -1192,6 +1231,8 @@ Use this when the user's request or established context clearly calls for a new 
 
 By default the new gadget is empty. Pass \`blueprintId\` (discovered with the \`listBlueprints\` tool, or given by the user) to instead start the gadget from a blueprint's code; the result then also describes the bindings the blueprint expects you to wire up.
 
+Before creating one, check \`listWorkspaceOutputs\`: don't duplicate a gadget the user already has in another workspace unless they ask you to.
+
 To change an existing gadget's title use \`renameGadget\`; to get rid of one use \`removeGadget\`.
 `.trim();
 
@@ -1211,6 +1252,38 @@ Removal is permanent once approved: the gadget's code, its history, and any hook
 Name the gadget by its \`env\` binding name as listed in the system prompt, or by its numeric workpiece id. A gadget created in this conversation that hasn't been accepted yet can't be removed this way; discarding this conversation's changes removes it instead.
 
 The result only confirms the request is pending owner approval. Tell the user it is waiting for the owner's approval; don't claim the gadget was removed, and don't request removal of the same gadget again.
+`.trim();
+
+let LIST_SCHEDULES_TOOL_DESCRIPTION = `
+List every schedule (hook) in this workspace: its \`hookId\`, title, description, whether it is enabled, the connection that delivers it, and the gadget it wakes (id and title).
+
+For an enabled schedule, \`status\` is what the scheduler reports: \`state\` ("active", "dead" when its callback exhausted its retries, "completed", or "expired"), \`cadence\`, \`timeZone\`, \`nextRunAt\` (with \`retrying\` when that is a retry), \`endedAt\`, \`failureCode\` (e.g. "callback_failed"), and any occurrence bound. A disabled schedule has no \`status\`: it doesn't run until the owner enables it.
+
+\`lastRun\` and \`lastFailure\` are the most recent call into the schedule's callback and the most recent failed one, as the workspace saw them: when, which method, how long it took, and for a failure the error message (\`stage\` "callback" for an error thrown by the gadget's callback, "authorization" when the run was refused before reaching it). Read the error and the gadget's callback code to work out why a run failed.
+
+Times are ISO 8601. The listing is read-only.
+`.trim();
+
+let REQUEST_SCHEDULE_CHANGE_TOOL_DESCRIPTION = `
+Ask the workspace owner to enable, disable or delete a schedule. This never changes anything by itself: it puts an approval card in the chat naming the schedule, the gadget it wakes, the change and your \`reason\`, and the schedule stays as it is until the owner approves. Only the workspace owner can approve; if they reject it, nothing changes.
+
+Name the schedule by its \`hookId\` from \`listSchedules\`. Deleting is permanent once approved. Only request a change the user asked for or clearly agreed to, and give a concrete \`reason\` in a sentence or two.
+
+The result only confirms the request is pending. Tell the user it is waiting for the owner's approval; don't claim the change was made, and don't request the same change again.
+`.trim();
+
+let RUN_SCHEDULE_NOW_TOOL_DESCRIPTION = `
+Run an enabled schedule's callback once, now, as if it had fired: the gadget's \`onSchedule\` callback receives a firing with a fresh \`runId\` and \`manual: true\`. Use it to test a schedule, or to retry one whose last run failed after fixing the cause. Name the schedule by its \`hookId\` from \`listSchedules\`; it must be an enabled Scheduled Tasks schedule.
+
+This doesn't change the schedule itself: its next run, occurrence count and retry state are untouched, and a failed manual run is not retried. Anything the callback writes still goes through the usual approvals.
+
+The result says whether the callback succeeded or failed (with the error), or that it is still running if it took longer than a minute; in that case its outcome shows up later as the schedule's \`lastRun\` in \`listSchedules\`.
+`.trim();
+
+let LIST_WORKSPACE_OUTPUTS_TOOL_DESCRIPTION = `
+List the gadgets the user already has in their other workspaces (the ones they own or that are shared with them), grouped by workspace title, with each gadget's title and output format. This workspace is not included.
+
+Call this before building a new gadget. If one elsewhere already does what the user is asking for, tell them its title and the workspace it is in instead of building a duplicate, unless they ask you to build it anyway. You can't open or read those workspaces from here; this listing is all you get.
 `.trim();
 
 let CREATE_WORKTREE_TOOL_DESCRIPTION = `
@@ -2503,6 +2576,31 @@ async function runAgentPass(
                   // has since decided is not the call's result.
                   if (toolCall.output === undefined) {
                     throw new Error("removeGadget tool call in log is missing its result");
+                  }
+                  toolOutput = {text: jsonToolResultText(toolCall.output)};
+                  break;
+                case "listSchedules":
+                case "listWorkspaceOutputs":
+                  // Read-only listings: replay returns what the model saw then, not a fresh
+                  // listing, so the replayed context matches the one the turn ran on.
+                  if (toolCall.output === undefined) {
+                    throw new Error(`${toolCall.toolName} tool call in log is missing its result`);
+                  }
+                  toolOutput = {text: jsonToolResultText(toolCall.output)};
+                  break;
+                case "requestScheduleChange":
+                  // Like removeGadget: the request was queued when the call ran; replay returns the
+                  // recorded result rather than queueing another.
+                  if (toolCall.output === undefined) {
+                    throw new Error("requestScheduleChange tool call in log is missing its result");
+                  }
+                  toolOutput = {text: jsonToolResultText(toolCall.output)};
+                  break;
+                case "runScheduleNow":
+                  // The run happened when the call ran; replay returns its recorded result and
+                  // never fires the callback again.
+                  if (toolCall.output === undefined) {
+                    throw new Error("runScheduleNow tool call in log is missing its result");
                   }
                   toolOutput = {text: jsonToolResultText(toolCall.output)};
                   break;
@@ -3889,6 +3987,104 @@ async function runAgentPass(
                   `gadget has not been removed and stays until the owner approves; if the owner ` +
                   `rejects the request, it is kept.`,
           };
+          return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      }
+    }),
+
+    listSchedules: defineTool({
+      name: "listSchedules",
+      label: "List schedules",
+      description: LIST_SCHEDULES_TOOL_DESCRIPTION,
+      parameters: Type.Object({}),
+      execute: async (toolCallId) => {
+        try {
+          let output = {schedules: await hooks.listSchedules()};
+          return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      }
+    }),
+
+    requestScheduleChange: defineTool({
+      name: "requestScheduleChange",
+      label: "Request schedule change",
+      description: REQUEST_SCHEDULE_CHANGE_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        hookId: Type.Number({
+          description: "The schedule to change: its hookId from listSchedules.",
+        }),
+        action: Type.Union([
+          Type.Literal("enable"), Type.Literal("disable"), Type.Literal("delete"),
+        ], {description: "What to ask the owner to do to the schedule."}),
+        reason: Type.String({
+          description:
+              "Why, in a sentence or two. Shown to the workspace owner on the approval card.",
+        }),
+      }),
+      execute: async (toolCallId, {hookId, action, reason}) => {
+        try {
+          // Never applies: this queues a pending action for the owner, whose card joins the chat
+          // after this step's assistant message; only the owner's approval applies the change
+          // (see OverseerImpl.applyScheduleChange).
+          let request = hooks.requestScheduleChange(chatId, hookId, action, reason);
+          let output = {
+            hookId,
+            title: request.title,
+            action,
+            actionId: request.actionId,
+            status: "pendingOwnerApproval" as const,
+            ...(request.alreadyPending ? {alreadyPending: true} : {}),
+            message: request.alreadyPending
+                ? `A request to ${action} "${request.title}" was already waiting for the ` +
+                  `workspace owner's approval, so no new request was made.`
+                : `The request to ${action} "${request.title}" is pending the workspace owner's ` +
+                  `approval. Nothing has changed yet; if the owner rejects it, the schedule stays ` +
+                  `as it is.`,
+          };
+          return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      }
+    }),
+
+    runScheduleNow: defineTool({
+      name: "runScheduleNow",
+      label: "Run schedule now",
+      description: RUN_SCHEDULE_NOW_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        hookId: Type.Number({
+          description: "The enabled schedule to run: its hookId from listSchedules.",
+        }),
+      }),
+      execute: async (toolCallId, {hookId}) => {
+        try {
+          // Recorded, so replay returns this result and never fires the callback again.
+          let output = await hooks.runScheduleNow(chatId, hookId);
+          return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      }
+    }),
+
+    listWorkspaceOutputs: defineTool({
+      name: "listWorkspaceOutputs",
+      label: "List outputs in other workspaces",
+      description: LIST_WORKSPACE_OUTPUTS_TOOL_DESCRIPTION,
+      parameters: Type.Object({}),
+      execute: async (toolCallId) => {
+        try {
+          // The initiator's index, not the owner's: it holds only what they can see.
+          let output = await hooks.listWorkspaceOutputs(initiator);
           return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);
         } catch (error) {
           toolCallNotes.set(toolCallId, {error: toolErrorText(error)});

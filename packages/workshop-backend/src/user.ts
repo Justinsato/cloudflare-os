@@ -967,6 +967,15 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return {outputs: this.#readOutputs(), catchingUp};
   }
 
+  /**
+   * The outputs index as it stands, without the catch-up sweep listOutputs() drives. Called by a
+   * workspace's agent (the listWorkspaceOutputs tool), which must not wake the user's other
+   * workspaces just to look.
+   */
+  async readOutputsIndex(): Promise<OutputSummary[]> {
+    return this.#readOutputs();
+  }
+
   // Ask the user's pre-existing workspaces to populate the outputs index, once. Workspaces push as
   // they change and when opened, so only those predating the index need this.
   //

@@ -425,6 +425,11 @@ export type ActionRecord = {
    */
   action: number | "create";
   description: ActionDescription;
+  /**
+   * Set on the requests the agent's requestScheduleChange tool queues (under the
+   * SCHEDULE_CHANGE_GATEKEEPER_ID sentinel): which hook, and what the owner is asked to do to it.
+   */
+  hookChange?: {hookId: number, change: "enable" | "disable" | "delete"};
   resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
   autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
 } | {
@@ -476,6 +481,31 @@ export type BoundHookRecord = {
   callback: NativeRpcStub<RpcTarget>;
   description: HookDescription;
   enabled: boolean;
+};
+
+/**
+ * One call into a hook's callback, as the Overseer saw it pass through (see
+ * makeHookFiringCallback): when it started, how it ended and, for a failure, the error's message.
+ */
+export type HookRunEntry = {
+  at: Date;
+  method: string;
+  outcome: "succeeded" | "failed" | "running";
+  stage?: "callback" | "authorization";
+  error?: string;
+  durationMs?: number;
+  runId?: string;
+  manual?: true;
+};
+
+/**
+ * The run history a hook's agent can see (listSchedules): its last call and its last failure.
+ * Keyed by hook id; deleted with the hook, kept across disable/enable.
+ */
+export type HookRunRecord = {
+  hookId: number;
+  lastRun?: HookRunEntry;
+  lastFailure?: HookRunEntry;
 };
 
 /** A user opt-in to auto-approve actions carrying a given `actionKind` on a given gatekeeper */
@@ -1334,6 +1364,11 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
 
       boundHooks: collection<BoundHookRecord>()({
         primaryKey: "id",
+      }),
+
+      // The last run and last failure of each bound hook (see HookRunRecord).
+      hookRuns: collection<HookRunRecord>()({
+        primaryKey: "hookId",
       }),
 
       // User-enabled rules to auto-approve actions carrying a given action kind on a given

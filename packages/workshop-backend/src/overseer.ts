@@ -1,10 +1,10 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, AgentScheduleInfo, AgentWorkspaceOutputs, HookRunInfo, ScheduleChangeKind, ScheduleManualRunResult, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
-import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
+import { type AgentCatalog, Gatekeeper, GatekeeperUserVerifier, HookInitiator, ResourceDescription, ApprovalQueue, ActionDescription, ObservationAuthorizer, ObservationDescription, VendorDescription, SupportedResource, resolveRequestedResource, HookController, HookDescription, HookStatus, ActionKind, GitCache, GitPullHints } from "@gadgets/workshop-shared/gatekeeper";
 import {
   DurableObject, WorkerEntrypoint, RpcStub as NativeRpcStub,
   RpcTarget as NativeRpcTarget, restore,
@@ -16,6 +16,7 @@ import {
   type ActionRecord, type ActiveAgentRecord, type AgentSpawnerBindingProps,
   type AiChatAgentContext, type BindingRecord,
   type BlueprintGadgetRecord, type BoundHookRecord, type ChatBindingEntry,
+  type HookRunEntry,
   type ChatChangeBoundaryRecord, type ChatChangeRecord, type CompactionCheckpoint,
   type ExternalChatRecord, type ExternalMessageRecord, type GadgetRecord, type GatekeeperCaller,
   type GatekeeperClass, type GatekeeperRecord, type ObserverRecord, type OverseerStorage,
@@ -404,6 +405,24 @@ const BUILTIN_TOOL_GATEKEEPER_ID = -1;
 // never auto-approved (no autoApprovable verdict, and applyPendingAction refuses any
 // sentinel), so no drain applies them.
 const GADGET_REMOVAL_GATEKEEPER_ID = -2;
+
+// Sentinel gatekeeperId for the pending "action" records the agent's requestScheduleChange tool
+// queues: a request for the workspace owner to enable, disable or delete a hook. The record's
+// `hookChange` names the hook and the change (its `action` key is the hook id). Handled like
+// GADGET_REMOVAL_GATEKEEPER_ID: approve/reject recognize it (owner only) and never dereference a
+// gatekeeper; approval applies the change through the same OverseerImpl methods as the Connections
+// toggle and delete; nothing auto-approves it (applyPendingAction refuses any sentinel).
+const SCHEDULE_CHANGE_GATEKEEPER_ID = -3;
+
+// How long runScheduleNow waits for the callback before reporting it as still running. The call
+// carries on either way; its outcome lands in the hook's run record when it settles.
+const MANUAL_RUN_WAIT_MS = 60_000;
+
+// How long listSchedules waits on one gatekeeper's getStatus() before reporting it unavailable.
+const HOOK_STATUS_TIMEOUT_MS = 10_000;
+
+// Caps on the listWorkspaceOutputs tool's result, so a large index can't flood the context.
+const AGENT_OUTPUTS_MAX_GADGETS = 400;
 
 type ExternalMessageResponseTargetRegistration = {
   idempotencyKey: string;
@@ -1801,6 +1820,310 @@ class OverseerImpl implements AgentHooks {
     this.traceAgentActionApproval(record, "denied");
   }
 
+  // --- Schedules (bound hooks) for the agent ------------------------------------------------
+
+  // Turn a hook on / off: the Connections toggle's path (see enableBoundHook), which an approved
+  // requestScheduleChange takes too.
+  enableHook(id: number): Promise<void> {
+    return enableBoundHook(this, id);
+  }
+
+  disableHook(id: number): Promise<void> {
+    return disableBoundHook(this, id);
+  }
+
+  // The agent's listSchedules tool (see AgentHooks.listSchedules): every bound hook, the gadget
+  // it wakes, what its gatekeeper reports about it (HookController.getStatus()), and the last
+  // run and failure recorded as firings passed through makeHookFiringCallback.
+  async listSchedules(): Promise<AgentScheduleInfo[]> {
+    let defaultGadgetId = this.defaultGadgetId;
+    let records = [...this.storage.boundHooks.list()];
+    return await Promise.all(records.map(async record => {
+      let gatekeeper = this.storage.gatekeepers.get(record.gatekeeperId);
+      // Hooks recorded before multi-gadget support carry no gadgetId (see listHooks).
+      let gadgetId = (record.gadgetId ?? defaultGadgetId)!;
+      let gadget = gadgetId !== undefined ? this.storage.gadgets.get(gadgetId) : undefined;
+      let info: AgentScheduleInfo = {
+        hookId: record.id,
+        title: record.description.title,
+        description: record.description.description,
+        enabled: record.enabled,
+        ...(gatekeeper?.resourceTitle ? {connection: gatekeeper.resourceTitle} : {}),
+        gadget: {id: gadgetId, ...(gadget?.type === "gadget" ? {title: gadget.title} : {})},
+      };
+
+      // A disabled hook has no gatekeeper-side state to report (disable() drops it).
+      if (record.enabled) {
+        try {
+          let status = await withTimeout(
+              readHookStatus(record.controller), HOOK_STATUS_TIMEOUT_MS,
+              "The connection took too long to report this schedule's state.");
+          if (status) info.status = agentHookStatus(status);
+        } catch (error) {
+          info.statusError = truncateHookError(
+              `The connection didn't report this schedule's state: ${hookErrorText(error)}`);
+        }
+      }
+
+      let runs = this.storage.hookRuns.get(record.id);
+      if (runs?.lastRun) info.lastRun = hookRunInfo(runs.lastRun);
+      if (runs?.lastFailure) info.lastFailure = hookRunInfo(runs.lastFailure);
+      return info;
+    }));
+  }
+
+  // The agent's requestScheduleChange tool (see AgentHooks.requestScheduleChange): queue a
+  // pending action, under the SCHEDULE_CHANGE_GATEKEEPER_ID sentinel, asking the owner to enable,
+  // disable or delete a hook. Changes nothing; approveAction does, through applyScheduleChange.
+  requestScheduleChange(chatId: number, hookId: number, change: ScheduleChangeKind,
+                        reason: string)
+      : {actionId: number, title: string, alreadyPending: boolean} {
+    if (change !== "enable" && change !== "disable" && change !== "delete") {
+      throw new Error(`Unknown change "${change}". Use "enable", "disable" or "delete".`);
+    }
+    reason = reason.trim();
+    if (!reason) {
+      throw new Error("Give a reason for the change; the owner sees it when deciding.");
+    }
+    if (reason.length > 2000) {
+      throw new Error("The reason is too long. Keep it to a sentence or two.");
+    }
+    let hook = this.storage.boundHooks.get(hookId);
+    if (!hook) {
+      throw new Error(
+          `No such schedule: ${hookId}. Use listSchedules to see this workspace's schedules.`);
+    }
+    let title = hook.description.title;
+    if (change === "enable" && hook.enabled) {
+      throw new Error(`"${title}" is already enabled; there is nothing to ask for.`);
+    }
+    if (change === "disable" && !hook.enabled) {
+      throw new Error(`"${title}" is already disabled; there is nothing to ask for.`);
+    }
+
+    // One pending request per hook and change: a second would put two cards in front of the
+    // owner for the same decision.
+    for (let queued of this.storage.actions.pendingByGatekeeper.get(
+        SCHEDULE_CHANGE_GATEKEEPER_ID)) {
+      if (queued.type === "action" && queued.hookChange?.hookId === hookId &&
+          queued.hookChange.change === change) {
+        return {actionId: queued.id, title, alreadyPending: true};
+      }
+    }
+
+    let gadgetId = hook.gadgetId ?? this.defaultGadgetId;
+    let gadget = gadgetId !== undefined ? this.storage.gadgets.get(gadgetId) : undefined;
+    let gadgetTitle = gadget?.type === "gadget" ? gadget.title : "(gadget no longer exists)";
+    let verb = change === "enable" ? "Enable" : change === "disable" ? "Disable" : "Delete";
+    let consequence = change === "enable"
+        ? "Enabling lets it run on its schedule, waking the gadget each time."
+        : change === "disable"
+        ? "Disabling stops its runs until it is enabled again."
+        : "Deleting stops it for good; it can't be restored, only registered again.";
+
+    let caller: GatekeeperCaller = {from: "agent", chatId};
+    let actionId = this.storage.nextActionId.get();
+    this.storage.nextActionId.put(actionId + 1);
+    let record: ActionRecord = {
+      id: actionId,
+      gatekeeperId: SCHEDULE_CHANGE_GATEKEEPER_ID,
+      caller,
+      resourceTitle: title,
+      action: hookId,
+      hookChange: {hookId, change},
+      createdAt: new Date(),
+      state: "pending",
+      type: "action",
+      description: {
+        title: `${verb} schedule "${title}"`,
+        description:
+            `The agent asks to ${change} this schedule. ${consequence} Only the workspace ` +
+            `owner can approve it; rejecting leaves the schedule as it is.`,
+        fields: [
+          {label: "Schedule", kind: "inline", value: title},
+          {label: "Gadget", kind: "inline", value: gadgetTitle},
+          {label: "Change", kind: "inline", value: verb},
+          {label: "Reason", kind: "text", value: reason},
+        ],
+        descriptionIsComplete: true,
+        implementsRevert: false,
+      },
+    };
+    this.storage.actions.put(record);
+    // As for removeGadget: the step's barrier appends the card after the assistant message.
+    this.#associateAction(caller, actionId);
+    this.traceAgentActionApproval(record, "requested");
+    return {actionId, title, alreadyPending: false};
+  }
+
+  // Apply an approved requestScheduleChange, through the same methods as the Connections toggle
+  // and delete, then record the approval. The caller (approveAction) has checked the approver is
+  // the owner. A hook deleted meanwhile satisfies "disable" and "delete" as it stands; "enable"
+  // can't apply, and throws so the request stays pending for the owner to reject. A failed
+  // change throws before the record changes, so the request stays pending.
+  async applyScheduleChange(record: ActionRecord & {type: "action"},
+                            resolvedBy: AiChatAuthorInfo): Promise<void> {
+    let hookChange = record.hookChange;
+    if (record.gatekeeperId !== SCHEDULE_CHANGE_GATEKEEPER_ID || !hookChange) {
+      throw new Error(`Not a schedule change request: ${record.id}`);
+    }
+    if (this.storage.actions.get(record.id)?.state !== "pending") {
+      throw new Error(`Action is not pending: ${record.id}`);
+    }
+    let exists = this.storage.boundHooks.get(hookChange.hookId) !== undefined;
+    if (hookChange.change === "enable") {
+      if (!exists) {
+        throw new Error("That schedule no longer exists, so it can't be enabled. Reject the " +
+                        "request instead.");
+      }
+      await this.enableHook(hookChange.hookId);
+    } else if (hookChange.change === "disable") {
+      if (exists) await this.disableHook(hookChange.hookId);
+    } else {
+      if (exists) await this.deleteHook(hookChange.hookId);
+    }
+    // Re-read: the change awaited, and a concurrent decision may have landed meanwhile.
+    let current = this.storage.actions.get(record.id);
+    if (current?.type !== "action" || current.state !== "pending") return;
+    current.state = "approved";
+    current.appliedAt = new Date();
+    current.resolvedBy = resolvedBy;
+    current.autoApproved = false;
+    this.storage.actions.put(current);
+    this.traceAgentActionApproval(current, "approved");
+  }
+
+  // Record the owner's rejection of a requestScheduleChange. The hook is untouched.
+  rejectScheduleChange(record: ActionRecord & {type: "action"}, resolvedBy: AiChatAuthorInfo)
+      : void {
+    if (this.storage.actions.get(record.id)?.state !== "pending") {
+      throw new Error(`Action is not pending: ${record.id}`);
+    }
+    record.state = "rejected";
+    record.appliedAt = new Date();
+    record.resolvedBy = resolvedBy;
+    this.storage.actions.put(record);
+    this.traceAgentActionApproval(record, "denied");
+  }
+
+  // The agent's runScheduleNow tool (see AgentHooks.runScheduleNow). The scheduler has no
+  // on-demand run: its driver keeps exactly one logical run per schedule, and injecting one would
+  // collide with that run's lease, retry and occurrence-count bookkeeping. So this is the closest
+  // equivalent from the Workshop side: the same admission a real firing gets (startHook's checks),
+  // the same observation authorization the scheduler performs before each delivery, then the
+  // gadget's registered callback (onSchedule) through the same live-hook wrapper, with a firing
+  // carrying a fresh runId and `manual: true`. The scheduler's own state (next run, bound, retry
+  // budget) is untouched, and a failure is not retried.
+  async runScheduleNow(chatId: number, hookId: number): Promise<ScheduleManualRunResult> {
+    let record = this.storage.boundHooks.get(hookId);
+    if (!record) {
+      throw new Error(
+          `No such schedule: ${hookId}. Use listSchedules to see this workspace's schedules.`);
+    }
+    let title = record.description.title;
+    let vendorId = record.vendorId ??
+        gatekeeperVendorId(this.storage.gatekeepers.get(record.gatekeeperId));
+    if (vendorId !== "scheduler") {
+      throw new Error(`"${title}" isn't a scheduled task, so it can't be run on demand.`);
+    }
+    if (!record.enabled) {
+      throw new Error(
+          `"${title}" is disabled. Only enabled schedules can be run now; ask the owner to ` +
+          `enable it with requestScheduleChange first.`);
+    }
+
+    await admitHookFiring(this, this.env, hookId);
+    let status = await withTimeout(
+        readHookStatus(record.controller), HOOK_STATUS_TIMEOUT_MS,
+        "The scheduler took too long to report this schedule.");
+    let scheduleId = status?.externalId;
+    if (!scheduleId) {
+      throw new Error(
+          "The scheduler didn't report this schedule's id, so it can't be run on demand.");
+    }
+
+    // Re-check after the awaits, as startHook does: a disable/delete may have landed meanwhile.
+    record = requireLiveHook(this, hookId);
+    await this.authorizeObservation(record.gatekeeperId, {
+      title: `Run scheduled task now: ${title}`,
+      description: `Deliver scheduled task ${scheduleId} once, on the agent's request, outside ` +
+          `its schedule.`,
+    }, {from: "agent", chatId});
+
+    let now = Date.now();
+    let runId = crypto.randomUUID();
+    let firing = {
+      scheduleId,
+      runId,
+      scheduledTime: now,
+      actualTime: now,
+      timeZone: status?.timeZone ?? "UTC",
+      manual: true,
+    };
+    let run = invokeHookCallback(this, hookId, "onSchedule", [firing], {manual: true})
+        .then(() => ({outcome: "succeeded" as const}),
+              (error: unknown) => ({outcome: "failed" as const, error: hookErrorText(error)}));
+    let waited = await Promise.race([
+      run,
+      new Promise<undefined>(resolve => setTimeout(() => resolve(undefined), MANUAL_RUN_WAIT_MS)),
+    ]);
+    let durationMs = Date.now() - now;
+    if (!waited) {
+      this.ctx.waitUntil(run);
+      return {
+        hookId, title, scheduleId, runId, outcome: "running",
+        message: `"${title}" is still running after ${MANUAL_RUN_WAIT_MS / 1000} seconds. ` +
+            `Its outcome will show as the schedule's last run in listSchedules.`,
+      };
+    }
+    if (waited.outcome === "failed") {
+      return {
+        hookId, title, scheduleId, runId, outcome: "failed",
+        error: truncateHookError(waited.error), durationMs,
+        message: `"${title}" ran once now and its callback failed. The scheduler's own ` +
+            `schedule is unchanged.`,
+      };
+    }
+    return {
+      hookId, title, scheduleId, runId, outcome: "succeeded", durationMs,
+      message: `"${title}" ran once now and its callback succeeded. The scheduler's own ` +
+          `schedule (next run, bound) is unchanged.`,
+    };
+  }
+
+  // The agent's listWorkspaceOutputs tool (see AgentHooks.listWorkspaceOutputs): the gadgets in
+  // the initiator's other workspaces, from the Outputs index in their own User DO -- which holds
+  // only workspaces they own or that are shared with them (forgetSharedGadget drops a revoked
+  // one) -- with nothing beyond workspace title, gadget title and output format.
+  async listWorkspaceOutputs(initiator: AiChatAuthorInfo)
+      : Promise<{workspaces: AgentWorkspaceOutputs[], truncated?: true}> {
+    let userStub = this.users.get(this.users.idFromName(initiator.id));
+    let outputs = await userStub.readOutputsIndex();
+    let self = this.ctx.id.toString();
+    let byWorkspace = new Map<string, AgentWorkspaceOutputs>();
+    let count = 0;
+    let truncated = false;
+    // The index lists most recently active workspaces first; keep that order.
+    for (let output of outputs) {
+      if (output.workspaceId === self) continue;
+      if (count >= AGENT_OUTPUTS_MAX_GADGETS) {
+        truncated = true;
+        break;
+      }
+      let entry = byWorkspace.get(output.workspaceId);
+      if (!entry) {
+        entry = {workspaceTitle: output.workspaceTitle, gadgets: []};
+        byWorkspace.set(output.workspaceId, entry);
+      }
+      entry.gadgets.push({
+        title: output.title,
+        ...(output.output ? {format: output.output.noun} : {}),
+      });
+      ++count;
+    }
+    return {workspaces: [...byWorkspace.values()], ...(truncated ? {truncated: true} : {})};
+  }
+
   // Chat deletion's workpiece cleanup: remove the gadgets and worktrees still provisional to the
   // chat (stamped or not -- deleting the chat discards its proposed changes, which were never
   // accepted), every worktree belonging to it (an accepted worktree is still this chat's alone;
@@ -1838,6 +2161,7 @@ class OverseerImpl implements AgentHooks {
       await record.controller.disable();
     }
     this.storage.boundHooks.delete(record.id);
+    this.storage.hookRuns.delete(record.id);
 
     stampBindHookAction(this.storage, record.actionId, false, {clearHookId: true});
   }
@@ -5158,6 +5482,7 @@ class OverseerImpl implements AgentHooks {
     for (let hook of Array.from(this.storage.boundHooks.list())) {
       if (hook.gatekeeperId !== id) continue;
       this.storage.boundHooks.delete(hook.id);
+      this.storage.hookRuns.delete(hook.id);
       stampBindHookAction(this.storage, hook.actionId, false, {clearHookId: true});
       if (hook.enabled) {
         this.ctx.waitUntil(hook.controller.disable().catch(error => {
@@ -10132,22 +10457,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   async startHook(hookId: number): Promise<{
     callback: NativeRpcStub<RpcTarget>, approvalQueue: ApprovalQueue
   }> {
-    let record = requireLiveHook(this.impl, hookId);
-
-    let vendorId = record.vendorId ??
-        gatekeeperVendorId(this.impl.storage.gatekeepers.get(record.gatekeeperId));
-    if (!vendorId) throw new Error("Hook vendor is unavailable.");
-
-    let config = await readAdminConfig(this.env);
-    if (config.disabledGatekeepers.includes(vendorId) ||
-        ambientGatekeeperMode(config, vendorId) === "disabled") {
-      throw new Error("Gatekeeper is disabled.");
-    }
-
-    // Re-read after the await: the KV read leaves the input gate open, so a disable/delete may
-    // have landed while it was in flight, and issuing from the captured record would hand out a
-    // firing on a dead hook (the enableHookRecord/disableHook idiom).
-    record = requireLiveHook(this.impl, hookId);
+    let record = await admitHookFiring(this.impl, this.env, hookId);
 
     // Both returned capabilities revalidate the hook per call rather than trusting this moment:
     // they are held outside this DO (even across resets -- the stored callback is a persistent
@@ -11131,6 +11441,17 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       return;
     }
 
+    // A requestScheduleChange request: like a removal, no gatekeeper and no auto-approval drain,
+    // and only the owner decides. Approval applies through the Connections toggle/delete path.
+    if (action.gatekeeperId === SCHEDULE_CHANGE_GATEKEEPER_ID) {
+      if (!this.isOwner) {
+        throw new Error("Only the workspace owner can approve a change to a schedule.");
+      }
+      let profile = await this.#getClientProfile();
+      await this.impl.applyScheduleChange(action, profile);
+      return;
+    }
+
     // Resolve the approver's identity before applying, so a failed profile fetch can't leave the
     // action applied in the world but still "pending" in storage.
     let profile = await this.#getClientProfile();
@@ -11198,50 +11519,14 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     return result;
   }
 
+  // The Connections toggle. The bodies are shared with OverseerImpl.enableHook/disableHook, so an
+  // owner-approved requestScheduleChange applies through exactly the same path.
   async enableHook(id: number): Promise<void> {
-    let record = this.impl.storage.boundHooks.get(id);
-    if (!record) throw new Error("Invalid hook ID.");
-
-    if (!record.enabled) {
-      let props: GatekeeperHookLoopbackProps = {
-        overseerId: this.impl.ctx.id.toString(),
-        hookId: id,
-      }
-
-      // TODO(hooks): enable()/disable() race. controller.enable() is awaited RPC to the gatekeeper;
-      // a concurrent disableHook() can finish its controller.disable() first, then this enable()
-      // still lands and recreates gatekeeper-side state (e.g. a scheduler driver row + alarm).
-      // Live firings stay safe because startHook() re-checks record.enabled, but the resurrected
-      // row can keep consuming quota/alarms until cleaned up.
-      await record.controller.enable(
-          this.impl.ctx.exports.GatekeeperHookLoopback({props}) as unknown as
-              Fetcher<HookInitiator<RpcTarget>>,
-          {
-            workspaceId: this.impl.ctx.id.toString(),
-            ...(record.gadgetId !== undefined ? {gadgetId: record.gadgetId} : {}),
-          });
-
-      // Flip the record and handle the "use"-scope widening an enabled hook can cause.
-      this.impl.enableHookRecord(record);
-    }
+    return enableBoundHook(this.impl, id);
   }
 
   async disableHook(id: number): Promise<void> {
-    let record = this.impl.storage.boundHooks.get(id);
-    if (!record) throw new Error("Invalid hook ID.");
-
-    if (record.enabled) {
-      await record.controller.disable();
-
-      // Re-read after the await: a deleteHook/removeGatekeeper landing while disable() was in
-      // flight already reached the goal state (no hook), and putting the captured record back
-      // would resurrect it as a zombie -- deleting the record must stay the authoritative kill.
-      let current = this.impl.storage.boundHooks.get(id);
-      if (!current) return;
-      current.enabled = false;
-      this.impl.storage.boundHooks.put(current);
-      stampBindHookAction(this.impl.storage, current.actionId, false);
-    }
+    return disableBoundHook(this.impl, id);
   }
 
   async deleteHook(id: number): Promise<void> {
@@ -11312,6 +11597,16 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       }
       let profile = await this.#getClientProfile();
       this.impl.rejectGadgetRemoval(action, profile);
+      return;
+    }
+
+    // A requestScheduleChange request: the owner's decision. Rejecting just records it.
+    if (action.gatekeeperId === SCHEDULE_CHANGE_GATEKEEPER_ID) {
+      if (!this.isOwner) {
+        throw new Error("Only the workspace owner can decide on a change to a schedule.");
+      }
+      let profile = await this.#getClientProfile();
+      this.impl.rejectScheduleChange(action, profile);
       return;
     }
 
@@ -13042,6 +13337,185 @@ function requireLiveHook(impl: OverseerImpl, hookId: number): BoundHookRecord {
   return record;
 }
 
+// Turn a hook on: the gatekeeper-side enable(), then the record flip with its "use"-scope
+// handling (enableHookRecord). The body of both the Connections toggle
+// (OverseerClientInterface.enableHook) and an approved requestScheduleChange, so both take exactly
+// one path.
+async function enableBoundHook(impl: OverseerImpl, id: number): Promise<void> {
+  let record = impl.storage.boundHooks.get(id);
+  if (!record) throw new Error("Invalid hook ID.");
+  if (record.enabled) return;
+
+  let props: GatekeeperHookLoopbackProps = {overseerId: impl.ctx.id.toString(), hookId: id};
+
+  // TODO(hooks): enable()/disable() race. controller.enable() is awaited RPC to the gatekeeper;
+  // a concurrent disableHook() can finish its controller.disable() first, then this enable()
+  // still lands and recreates gatekeeper-side state (e.g. a scheduler driver row + alarm).
+  // Live firings stay safe because startHook() re-checks record.enabled, but the resurrected
+  // row can keep consuming quota/alarms until cleaned up.
+  await record.controller.enable(
+      impl.ctx.exports.GatekeeperHookLoopback({props}) as unknown as
+          Fetcher<HookInitiator<RpcTarget>>,
+      {
+        workspaceId: impl.ctx.id.toString(),
+        ...(record.gadgetId !== undefined ? {gadgetId: record.gadgetId} : {}),
+      });
+
+  // Flip the record and handle the "use"-scope widening an enabled hook can cause.
+  impl.enableHookRecord(record);
+}
+
+// Turn a hook off. The body of OverseerClientInterface.disableHook and of an approved
+// requestScheduleChange.
+async function disableBoundHook(impl: OverseerImpl, id: number): Promise<void> {
+  let record = impl.storage.boundHooks.get(id);
+  if (!record) throw new Error("Invalid hook ID.");
+  if (!record.enabled) return;
+
+  await record.controller.disable();
+
+  // Re-read after the await: a deleteHook/removeGatekeeper landing while disable() was in
+  // flight already reached the goal state (no hook), and putting the captured record back
+  // would resurrect it as a zombie -- deleting the record must stay the authoritative kill.
+  let current = impl.storage.boundHooks.get(id);
+  if (!current) return;
+  current.enabled = false;
+  impl.storage.boundHooks.put(current);
+  stampBindHookAction(impl.storage, current.actionId, false);
+}
+
+// The admission every firing gets before its capabilities are issued (startHook), and that a
+// manual run gets too (runScheduleNow): the hook is live, and its vendor isn't administratively
+// disabled. Returns the record as re-read after the admin-config await.
+async function admitHookFiring(impl: OverseerImpl, env: Cloudflare.Env, hookId: number)
+    : Promise<BoundHookRecord> {
+  let record = requireLiveHook(impl, hookId);
+
+  let vendorId = record.vendorId ??
+      gatekeeperVendorId(impl.storage.gatekeepers.get(record.gatekeeperId));
+  if (!vendorId) throw new Error("Hook vendor is unavailable.");
+
+  let config = await readAdminConfig(env);
+  if (config.disabledGatekeepers.includes(vendorId) ||
+      ambientGatekeeperMode(config, vendorId) === "disabled") {
+    throw new Error("Gatekeeper is disabled.");
+  }
+
+  // Re-read after the await: the KV read leaves the input gate open, so a disable/delete may
+  // have landed while it was in flight, and issuing from the captured record would hand out a
+  // firing on a dead hook (the enableHookRecord/disableHook idiom).
+  return requireLiveHook(impl, hookId);
+}
+
+// Longest error message a hook run record keeps.
+const HOOK_RUN_ERROR_LIMIT = 1000;
+
+function hookErrorText(error: unknown): string {
+  let text = error instanceof Error ? error.message : String(error);
+  return text || "(no error message)";
+}
+
+function truncateHookError(text: string): string {
+  return text.length > HOOK_RUN_ERROR_LIMIT ? text.slice(0, HOOK_RUN_ERROR_LIMIT) + "…" : text;
+}
+
+// Note one call into a hook's callback (or the authorization in front of it) as the hook's last
+// run, and as its last failure when it failed. Best-effort: recording must never change what the
+// firing sees, so any failure here is only logged. A hook deleted meanwhile gets no record (its
+// run history went with it, and must not be resurrected by a firing settling late).
+function recordHookRun(impl: OverseerImpl, hookId: number, entry: HookRunEntry): void {
+  try {
+    let runs = impl.storage.hookRuns;
+    // Some tests stand in a partial storage without the collection.
+    if (!runs || !impl.storage.boundHooks.get(hookId)) return;
+    let current = runs.get(hookId) ?? {hookId};
+    current.lastRun = entry;
+    if (entry.outcome === "failed") current.lastFailure = entry;
+    runs.put(current);
+  } catch (error) {
+    impl.logger?.warn("failed to record a hook run", {
+      event: "gatekeeper.hook.run.record.failed", hookId, error,
+    });
+  }
+}
+
+// Call a live hook's stored callback -- a method on it, or (method null) the callback itself,
+// which the bindHook contract allows to be a function -- recording the outcome. Refuses, before
+// recording anything, unless the hook is still live (requireLiveHook).
+async function invokeHookCallback(impl: OverseerImpl, hookId: number, method: string | null,
+                                  args: unknown[], options: {manual?: boolean} = {})
+    : Promise<unknown> {
+  let record = requireLiveHook(impl, hookId);
+  let started = Date.now();
+  let firing = args[0] as {runId?: unknown} | undefined;
+  let base = {
+    at: new Date(started),
+    method: method ?? "(call)",
+    stage: "callback" as const,
+    ...(firing && typeof firing === "object" && typeof firing.runId === "string"
+        ? {runId: firing.runId} : {}),
+    ...(options.manual ? {manual: true as const} : {}),
+  };
+  try {
+    let result = method === null
+        ? await Reflect.apply(record.callback as any, undefined, args)
+        : await Reflect.apply((record.callback as any)[method], record.callback, args);
+    recordHookRun(impl, hookId, {...base, outcome: "succeeded", durationMs: Date.now() - started});
+    return result;
+  } catch (error) {
+    recordHookRun(impl, hookId, {
+      ...base, outcome: "failed", durationMs: Date.now() - started,
+      error: truncateHookError(hookErrorText(error)),
+    });
+    throw error;
+  }
+}
+
+function hookRunInfo(entry: HookRunEntry): HookRunInfo {
+  return {
+    at: entry.at.toISOString(),
+    method: entry.method,
+    outcome: entry.outcome,
+    ...(entry.stage ? {stage: entry.stage} : {}),
+    ...(entry.error !== undefined ? {error: entry.error} : {}),
+    ...(entry.durationMs !== undefined ? {durationMs: entry.durationMs} : {}),
+    ...(entry.runId ? {runId: entry.runId} : {}),
+    ...(entry.manual ? {manual: true as const} : {}),
+  };
+}
+
+// A gatekeeper's HookStatus as the agent sees it: times as ISO strings rather than epoch ms.
+function agentHookStatus(status: HookStatus): NonNullable<AgentScheduleInfo["status"]> {
+  let iso = (ms: number | undefined) =>
+      typeof ms === "number" && Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
+  let {nextRunAt, endedAt, occurrences, ...rest} = status;
+  let result: NonNullable<AgentScheduleInfo["status"]> = {...rest};
+  if (iso(nextRunAt)) result.nextRunAt = iso(nextRunAt);
+  if (iso(endedAt)) result.endedAt = iso(endedAt);
+  if (occurrences) {
+    let {until, ...bound} = occurrences;
+    result.occurrences = {...bound, ...(iso(until) ? {until: iso(until)} : {})};
+  }
+  return result;
+}
+
+// Ask a hook's controller for its HookController.getStatus() report. The method is optional, so a
+// controller without it (e.g. a test double) reports nothing; on a real stub every property is
+// callable, and a gatekeeper that doesn't implement it rejects, which the caller reports.
+async function readHookStatus(controller: unknown): Promise<HookStatus | null | undefined> {
+  let target = controller as {getStatus?: () => Promise<HookStatus | null>};
+  if (typeof target.getStatus !== "function") return undefined;
+  return await target.getStatus();
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
+
 // The callback startHook returns to each firing: a wrapper that re-resolves the stored callback
 // through requireLiveHook on every call, so it dies with the hook -- the per-firing revocation
 // the session contract on Gatekeeper.bindHook documents. The stored record.callback itself never
@@ -13065,18 +13539,14 @@ function makeHookFiringCallback(impl: OverseerImpl, hookId: number): NativeRpcSt
     // escaping into the RPC machinery that invokes the function (workerd reports that as
     // uncaught, too).
     async apply(_target, _thisArg, args: unknown[]) {
-      let record = requireLiveHook(impl, hookId);
-      return Reflect.apply(record.callback as any, undefined, args);
+      return invokeHookCallback(impl, hookId, null, args);
     },
     get(_target, prop) {
       // All wildcard properties of a stub appear as functions, so `then` must come back
       // undefined (this is not a thenable) and symbols are never RPC methods -- the same
       // dispositions as getGadgetFacet's proxy over the gadget facet.
       if (typeof prop === "symbol" || prop === "then") return undefined;
-      return async (...args: unknown[]) => {
-        let record = requireLiveHook(impl, hookId);
-        return Reflect.apply((record.callback as any)[prop], record.callback, args);
-      };
+      return async (...args: unknown[]) => invokeHookCallback(impl, hookId, prop, args);
     },
     getPrototypeOf() {
       return RpcTarget.prototype;
@@ -13098,8 +13568,23 @@ class ApprovalQueueImpl extends RpcTarget implements ApprovalQueue {
   }
 
   authorizeObservation(description: ObservationDescription): Promise<void> {
-    if (this.hookId !== undefined) requireLiveHook(this.impl, this.hookId);
-    return this.impl.authorizeObservation(this.gatekeeperId, description, this.caller);
+    if (this.hookId === undefined) {
+      return this.impl.authorizeObservation(this.gatekeeperId, description, this.caller);
+    }
+    let hookId = this.hookId;
+    requireLiveHook(this.impl, hookId);
+    // A firing's authorization failing is a failed run as far as the workspace can tell (the
+    // scheduler, for one, then counts it as an "authorization_failed" attempt), so record it.
+    let started = Date.now();
+    return this.impl.authorizeObservation(this.gatekeeperId, description, this.caller)
+        .catch((error: unknown) => {
+          recordHookRun(this.impl, hookId, {
+            at: new Date(started), method: "authorizeObservation", outcome: "failed",
+            stage: "authorization", durationMs: Date.now() - started,
+            error: truncateHookError(hookErrorText(error)),
+          });
+          throw error;
+        });
   }
 
   async getGitCache(): Promise<GitCache> {
