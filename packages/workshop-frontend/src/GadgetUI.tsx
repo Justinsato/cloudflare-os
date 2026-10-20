@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useMemo, useRef } from 'react'
 import { Text, Loader, Banner } from '@cloudflare/kumo'
 import { Sparkle } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
@@ -31,6 +31,17 @@ let gadget;  // RPC stub to the gadget's server-side Durable Object.
   window.parent.postMessage("handshake", "*", [port2]);
   gadget = newMessagePortRpcSession(port1);
 }
+
+// The UI's view state (sort, filters, selected tab), kept in the workspace page's URL by the parent
+// so a reload or a shared link restores it. __gadgetViewState is declared ahead of this prefix with
+// the state the page opened with (see createSandboxedHtml).
+const gadgetView = {
+  get params() { return new URLSearchParams(__gadgetViewState); },
+  set(params) {
+    __gadgetViewState = new URLSearchParams(params).toString();
+    window.parent.postMessage({ type: 'view-state', state: __gadgetViewState }, '*');
+  },
+};
 
 // Monkey-patch console to forward logs to the parent frame.
 for (let level of ['debug', 'info', 'log', 'warn', 'error']) {
@@ -131,7 +142,12 @@ window.addEventListener('unhandledrejection', (event) => {
 
 `);
 
-const createSandboxedHtml = (jsCode: string): string => {
+// The longest view state a gadget may keep in the page URL; longer ones are ignored.
+export const MAX_GADGET_VIEW_STATE_LENGTH = 2000
+
+const createSandboxedHtml = (jsCode: string, viewState: string): string => {
+  const viewStateDeclaration =
+    encodeURIComponent(`let __gadgetViewState = ${JSON.stringify(viewState)};\n`)
   return `<!DOCTYPE html>
 <html>
 <head>
@@ -139,7 +155,7 @@ const createSandboxedHtml = (jsCode: string): string => {
   <meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src 'none'; script-src data: 'unsafe-inline'; style-src data: 'unsafe-inline'; img-src data:; media-src data:; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none';">
 </head>
 <body>
-    <script type="module" src="data:text/javascript;charset=utf-8,${INJECTED_CODE_PREFIX}${encodeURIComponent(jsCode)}"></script>
+    <script type="module" src="data:text/javascript;charset=utf-8,${viewStateDeclaration}${INJECTED_CODE_PREFIX}${encodeURIComponent(jsCode)}"></script>
 </body>
 </html>`.trim()
 }
@@ -160,6 +176,11 @@ interface GadgetUIProps {
   // Fires when the gadget asks to open another gadget of this workspace (see the click handler in
   // the injected prefix). Carries an id, a title, or both.
   onOpenWorkpiece?: (target: { id?: number; title?: string }) => void
+  // The gadget's view state (a query string, see `gadgetView` in the injected prefix) as the page
+  // opened with it. Read when the frame loads; later changes come from the gadget itself.
+  viewState?: string
+  // Fires when the gadget saves a new view state, for the parent to keep in its URL.
+  onViewStateChange?: (state: string) => void
 }
 
 // How long to wait for a UI bundle before offering a retry instead of a spinner. Not a latency
@@ -171,8 +192,9 @@ export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
-function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange, onOpenWorkpiece }: GadgetUIProps) {
-  const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
+function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, onConsoleLog, onIframeEscape, onNoUiChange, onOpenWorkpiece, viewState, onViewStateChange }: GadgetUIProps) {
+  // The loaded UI bundle's client code; the frame's HTML is built from it per frame load.
+  const [uiCode, setUiCode] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [hasLoaded, setHasLoaded] = useState(false)
@@ -205,6 +227,15 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   onNoUiChangeRef.current = onNoUiChange
   const onOpenWorkpieceRef = useRef(onOpenWorkpiece)
   onOpenWorkpieceRef.current = onOpenWorkpiece
+  const onViewStateChangeRef = useRef(onViewStateChange)
+  onViewStateChangeRef.current = onViewStateChange
+  // The gadget's latest view state: the page's to begin with, then whatever the gadget saved. A
+  // frame reload (a reconnect, a code change) restores it from here.
+  const viewStateRef = useRef(viewState ?? '')
+  const sandboxedHtml = useMemo(
+    () => uiCode === null ? null : createSandboxedHtml(uiCode, viewStateRef.current),
+    // oxlint-disable-next-line exhaustive-deps -- rebuilt per frame load: reloadTrigger and iframeGeneration key the frame.
+    [uiCode, reloadTrigger, iframeGeneration])
 
   // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
   // result must not keep counting while the replacement load is pending.
@@ -300,7 +331,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       setIsInvalidated(true)
       if (!isVisible) {
         // If not visible, just clear the current state
-        setSandboxedHtml(null)
+        setUiCode(null)
         setHasLoaded(false)
         setError(null)
       }
@@ -342,10 +373,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         const bundle = await gadget.getUiBundle(chatId)
         if (!isCurrent()) return
         if (bundle) {
-          const html = createSandboxedHtml(bundle.jsCode)
-          setSandboxedHtml(html)
+          setUiCode(bundle.jsCode)
         } else {
-          setSandboxedHtml(null)
+          setUiCode(null)
         }
         setHasLoaded(true)
         setIsInvalidated(false)
@@ -437,6 +467,11 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         const id = Number.isSafeInteger(event.data.id) ? event.data.id as number : undefined
         const title = typeof event.data.title === 'string' ? event.data.title : undefined
         if (id !== undefined || title !== undefined) onOpenWorkpieceRef.current?.({ id, title })
+      } else if (event.data?.type === 'view-state') {
+        const state = event.data.state
+        if (typeof state !== 'string' || state.length > MAX_GADGET_VIEW_STATE_LENGTH) return
+        viewStateRef.current = state
+        onViewStateChangeRef.current?.(state)
       }
     }
 

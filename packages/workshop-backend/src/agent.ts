@@ -28,6 +28,8 @@ import { traceRejectedToolCall, traceTool } from "./agent-tracing";
 import { AgentTurnError, completeText, httpStatusFromError, zeroUsage } from "./ai-invoke";
 import type { ModelHandle } from "./ai-models";
 import { blobOid } from "./git-store";
+import { WORKSPACE_BINDING_NAME } from "./workspace-binding";
+import { WORKSPACE_HOME_CLIENT_JS, WORKSPACE_HOME_SERVER_JS } from "@gadgets/workshop-shared/workspace-home";
 import type {
   AiChatAgentContext, ChatBindingEntry, CompactionCheckpoint, StoredAssistantMessage,
   StoredChatMessage, StoredToolCall,
@@ -211,7 +213,8 @@ async function describeBinding(
     {name, gadget}: {name: string, gadget?: string},
     chatBindings: Map<string, ChatBindingEntry>,
     chatId: number,
-    hooks: Pick<AgentHooks, "describeBinding" | "describeGitBinding" | "listGadgetInfo">)
+    hooks: Pick<AgentHooks,
+        "describeBinding" | "describeGitBinding" | "describeWorkspaceBinding" | "listGadgetInfo">)
     : Promise<string> {
   if (gadget === undefined) {
     let envName = `env.${name}`;
@@ -235,10 +238,12 @@ async function describeBinding(
       ? hooks.listGadgetInfo(chatId).find(candidate => candidate.id === gadgetEntry.id)
       : undefined;
   if (!info) throw new Error(`There is no gadget named "${gadget}" in your env.`);
-  // Mirrors the env getEnvForLoader builds: the gadget's own edges shadow GIT and GADGET.
+  // Mirrors the env getEnvForLoader builds: the gadget's own edges shadow GIT, WORKSPACE and
+  // GADGET.
   let edge = info.bindings.find(binding => binding.name === name);
   if (edge) return hooks.describeBinding(envName, edge.target);
   if (name === GIT_BINDING_NAME) return hooks.describeGitBinding(envName);
+  if (name === WORKSPACE_BINDING_NAME) return hooks.describeWorkspaceBinding(envName);
   if (name === "GADGET") return hooks.describeBinding(envName, info.id);
   throw new Error(`Gadget ${gadget} has no binding named "${name}".`);
 }
@@ -488,6 +493,9 @@ export interface AgentHooks {
   /** Describe the env.GIT binding (see GIT_BINDING_NAME), for the describeBinding tool. */
   describeGitBinding(envName: string): string;
 
+  /** Describe a gadget's env.WORKSPACE binding (see workspace-binding.ts), likewise. */
+  describeWorkspaceBinding(envName: string): string;
+
   /**
    * Add a binding to the given gadget, pointing at the given workpiece. The binding is provisional
    * to the chat. The caller is responsible for getting the addition recorded in the chat log (see
@@ -699,6 +707,28 @@ Make Gadget UIs responsive and usable on both desktop and phones by default.
 Both the client and server run inside a strictly isolated sandbox. They cannot make requests to the Internet, e.g. by calling \`fetch()\`. Instead, a Gadget communicates with the outside world strictly through its "bindings", that is, the Cloudflare Workers \`env\` API, which code in the Durable Object class can access as \`this.env\`.
 
 Every Gadget's \`env\`, as well as your own \`executeCode\` env, always contains \`env.GIT\`, which provides programmatic access to git commits known to the workspace: read a commit's metadata and files, edit them in memory, and write new commits. Use \`describeBinding\` to learn its API if you need it.
+
+Every Gadget's \`env\` also contains \`env.WORKSPACE\`, a read-only view of this workspace: \`await this.env.WORKSPACE.listGadgets()\` returns \`[{id, title, self}]\` for every gadget in the order the workspace shows them, with \`self\` true on the calling gadget. Read it whenever you render instead of storing a copy of the gadget list; a stored copy goes stale when gadgets are renamed, added or removed.
+
+## Linking to other gadgets
+
+A Gadget's UI can open another gadget of the same workspace in place. A click on any element carrying \`data-workpiece-id="<id>"\` (preferred) or \`data-workpiece-title="<title>"\`, or on a link with \`href="#w=<id>"\`, opens that gadget. Always link by id, taken from \`env.WORKSPACE.listGadgets()\`; titles change.
+
+## View state in the URL
+
+The \`gadgetView\` global keeps a Gadget UI's view state (sort, filters, selected tab) in the workspace page's URL, so a reload or a shared link restores it. \`gadgetView.params\` returns a \`URLSearchParams\` with the state the page opened with (plus anything set since); \`gadgetView.set(params)\` saves a new state (a \`URLSearchParams\`, a plain object, or a query string). Use it for every sortable or filterable table.
+
+## Workspace Home (a launcher listing the workspace's gadgets)
+
+When asked for a Workspace Home, launcher, index or table of contents of the workspace, build it on \`env.WORKSPACE\`, never on a stored list. Canonical shape:
+
+\`\`\`
+${WORKSPACE_HOME_SERVER_JS}\`\`\`
+
+\`\`\`
+${WORKSPACE_HOME_CLIENT_JS}\`\`\`
+
+Add columns by deriving them from the title (for example, splitting a naming convention into its parts); keep every column sortable and filterable. Never hard-code gadget ids or titles in a Workspace Home.
 
 Note that the iframe sandbox on the client side prohibits modal popup boxes like alert() and confirm(), so do not use those.
 

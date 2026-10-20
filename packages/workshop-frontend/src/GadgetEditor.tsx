@@ -41,6 +41,7 @@ import WorkpieceCodeInterface from './features/code/WorkpieceCodeInterface'
 import type { ChatContentReader } from './features/code/otClient'
 import GadgetUI from './GadgetUI'
 import GadgetUseView from './GadgetUseView'
+import { gadgetViewParam, gadgetViewStateFromParam } from './gadgetViewParam'
 import Connections from './Connections'
 import Activity, { type ActivityView } from './Activity'
 import { CountBadge } from './components/CountBadge'
@@ -381,8 +382,8 @@ export default function GadgetEditor() {
   const { authenticatedApi } = useAuthenticatedApi()
   const publicApi = useRpcStub()
 
-  const { chat: chatParam, w: workpieceParam, showChat: showChatParam } =
-    useSearch({ strict: false }) as { chat?: number; w?: number; showChat?: true }
+  const { chat: chatParam, w: workpieceParam, showChat: showChatParam, view: viewParam } =
+    useSearch({ strict: false }) as { chat?: number; w?: number; showChat?: true; view?: string }
   const urlChatId = chatParam !== undefined ? chatParam : null
   const urlWorkpieceId = workpieceParam !== undefined ? workpieceParam : null
 
@@ -1297,6 +1298,21 @@ export default function GadgetEditor() {
   // A gadget asked to open another gadget of this workspace (a launcher row, a cross-link). By id
   // when it has one, else by exact title; anything that doesn't resolve to a visible workpiece is
   // ignored, so a gadget can't open what the picker wouldn't offer.
+  // The selected gadget saved its view state (sort, filters): keep it in the URL, replacing the
+  // history entry so each keystroke in a filter doesn't add one.
+  const handleGadgetViewStateChange = useCallback((state: string) => {
+    if (selectedGadgetId === null) return
+    navigate({
+      to: '/workspace/$id',
+      params: { id: id! },
+      search: (prev: Record<string, unknown>) => ({
+        ...prev, view: gadgetViewParam(selectedGadgetId, state),
+      }),
+      replace: true,
+    })
+  }, [id, navigate, selectedGadgetId])
+  const selectedGadgetViewState = gadgetViewStateFromParam(viewParam, selectedGadgetId)
+
   const handleOpenWorkpieceFromGadget = useCallback((target: { id?: number; title?: string }) => {
     const match = visibleWorkpieces.find(w => w.id === target.id) ??
         (target.title !== undefined ? visibleWorkpieces.find(w => w.title === target.title) : undefined)
@@ -1463,6 +1479,8 @@ export default function GadgetEditor() {
         selectedGadgetId={selectedGadgetId}
         gadgets={visibleGadgets}
         onSelectGadget={handleSelectWorkpiece}
+        viewState={selectedGadgetViewState}
+        onViewStateChange={handleGadgetViewStateChange}
         metadata={metadata}
         authenticatedApi={authenticatedApi}
         currentUserId={userInfo?.id ?? null}
@@ -2015,6 +2033,8 @@ export default function GadgetEditor() {
                   chatId={previewChatId}
                   onConsoleLog={handleClientConsoleLog}
                   onOpenWorkpiece={handleOpenWorkpieceFromGadget}
+                  viewState={selectedGadgetViewState}
+                  onViewStateChange={handleGadgetViewStateChange}
                   onIframeEscape={isGadgetFullscreen ? exitGadgetFullscreen : undefined}
                   onNoUiChange={handleNoUiChange}
                 />
@@ -2118,6 +2138,8 @@ export default function GadgetEditor() {
               chatId={previewChatId}
               onConsoleLog={handleClientConsoleLog}
               onOpenWorkpiece={handleOpenWorkpieceFromGadget}
+              viewState={selectedGadgetViewState}
+              onViewStateChange={handleGadgetViewStateChange}
             />
           )}
         </div>
