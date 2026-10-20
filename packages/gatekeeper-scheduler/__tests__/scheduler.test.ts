@@ -4,11 +4,13 @@ import type { ApprovalQueue, HookInitiator } from "@gadgets/workshop-shared/gate
 import {
   ScheduleManagementApi,
   ScheduleSessionImpl,
+  describeCadence,
   describeScheduleAccount,
+  describeScheduleController,
   disableScheduleController,
   enableScheduleController,
 } from "../src/scheduler.js";
-import type { ScheduleActivation } from "../src/schedule-driver.js";
+import type { ScheduleActivation, StoredSchedule } from "../src/schedule-driver.js";
 import type { ScheduleSummary, ScheduledTaskHook } from "../src/types.js";
 
 type ScheduleHookTarget = RpcTarget & ScheduledTaskHook;
@@ -307,6 +309,103 @@ describe("schedule hook controller", () => {
     );
 
     expect(disable).toHaveBeenCalledWith("workspace-a", "schedule-a");
+  });
+
+  const statusProps = {
+    accountId: "account-a",
+    workspaceId: "workspace-a",
+    scheduleId: "schedule-a",
+    spec: {
+      kind: "calendar",
+      timeZone: "America/Chicago",
+      rule: { freq: "daily", interval: 1, hour: 7, minute: 5, anchorMs: 1_000 },
+    } as const,
+    title: "Morning brief",
+    description: "Prepare the brief.",
+    occurrences: { count: 10 },
+  };
+
+  function stored(state: Record<string, unknown>): StoredSchedule {
+    return {
+      version: 1,
+      title: "Morning brief",
+      description: "Prepare the brief.",
+      state: {
+        workspaceId: "workspace-a",
+        scheduleId: "schedule-a",
+        spec: statusProps.spec,
+        occurrences: { count: 10 },
+        occurrenceCount: 3,
+        ...state,
+      } as StoredSchedule["state"],
+    };
+  }
+
+  it("reports a dead schedule's failure code from its own driver row, read-only", async () => {
+    const getSchedule = vi.fn(async () => stored({
+      status: "dead", runId: "run-1", attempts: 8, failedAt: 5_000,
+      failureCode: "callback_failed",
+    }));
+
+    const status = await describeScheduleController(statusProps, { getSchedule });
+
+    expect(getSchedule).toHaveBeenCalledWith("workspace-a", "schedule-a");
+    expect(status).toEqual({
+      externalId: "schedule-a",
+      state: "dead",
+      cadence: "daily at 07:05",
+      timeZone: "America/Chicago",
+      endedAt: 5_000,
+      failureCode: "callback_failed",
+      occurrences: { count: 10, used: 3 },
+    });
+  });
+
+  it("reports the next run of an active or retrying schedule", async () => {
+    const active = await describeScheduleController(statusProps, {
+      getSchedule: async () => stored({ status: "active", nextFire: 9_000 }),
+    });
+    expect(active).toMatchObject({ state: "active", nextRunAt: 9_000 });
+    expect(active).not.toHaveProperty("retrying");
+
+    const retrying = await describeScheduleController(statusProps, {
+      getSchedule: async () => stored({
+        status: "retrying", runId: "run-1", scheduledTime: 8_000, attempts: 2,
+        nextAttempt: 12_000,
+      }),
+    });
+    expect(retrying).toMatchObject({ state: "active", nextRunAt: 12_000, retrying: true });
+  });
+
+  it("reports inactive, with the registered cadence, when the driver has no row", async () => {
+    const status = await describeScheduleController(
+      { ...statusProps, spec: { kind: "interval", everyMs: 900_000, anchorMs: 0 } },
+      { getSchedule: async () => undefined },
+    );
+
+    expect(status).toEqual({
+      externalId: "schedule-a",
+      state: "inactive",
+      cadence: "every 15 minutes",
+      occurrences: { count: 10 },
+    });
+  });
+
+  it("describes each cadence shape in plain words", () => {
+    expect(describeCadence({ kind: "interval", everyMs: 60_000, anchorMs: 0 }))
+      .toBe("every minute");
+    expect(describeCadence({ kind: "interval", everyMs: 90_000, anchorMs: 0 }))
+      .toBe("every 90 seconds");
+    expect(describeCadence({
+      kind: "calendar", timeZone: "UTC",
+      rule: { freq: "hourly", interval: 2, minute: 30, anchorMs: 0 },
+    })).toBe("every 2 hours at minute 30");
+    expect(describeCadence({
+      kind: "calendar", timeZone: "UTC",
+      rule: { freq: "weekly", interval: 1, byDay: ["MO", "TH"], hour: 9, minute: 15, anchorMs: 0 },
+    })).toBe("weekly on MO, TH at 09:15");
+    expect(describeCadence({ kind: "once", fireAt: 0, timeZone: "UTC" }))
+      .toBe("once at 1970-01-01T00:00:00.000Z");
   });
 });
 

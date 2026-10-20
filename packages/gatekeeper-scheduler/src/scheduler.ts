@@ -19,6 +19,7 @@ import type {
   GatekeeperUserVerifier,
   HookController,
   HookInitiator,
+  HookStatus,
   HookTargetMetadata,
   ResourceConfiguratorFrame,
   ResourceDescription,
@@ -31,12 +32,14 @@ import {
   normalizeOneShot,
   normalizeRecurringScheduleOptions,
 } from "./scheduler-core.js";
-import { ScheduleDriver } from "./schedule-driver.js";
+import { ScheduleDriver, toScheduleSummary } from "./schedule-driver.js";
 import type { ScheduleSpec } from "./schedule-types.js";
 import type { ManagementListOptions, ManagementSchedulePage } from "./management.js";
 import type {
   CalendarRule,
+  NormalizedCalendarRule,
   NormalizedScheduleOccurrences,
+  ScheduleCadence,
   OneShotTime,
   RecurringScheduleOptions,
   ScheduleOptions,
@@ -70,7 +73,7 @@ export type ScheduleControllerProps = {
 };
 
 type SessionDriver = Pick<ScheduleDriver, "listWorkspace">;
-type ControllerDriver = Pick<ScheduleDriver, "enable" | "disable">;
+type ControllerDriver = Pick<ScheduleDriver, "enable" | "disable" | "getSchedule">;
 type ControllerFactory = (
   props: ScheduleControllerProps,
 ) => Fetcher<HookController<ScheduleHookTarget>>;
@@ -203,6 +206,92 @@ export function disableScheduleController(
   return driver.disable(props.workspaceId, props.scheduleId);
 }
 
+/**
+ * Reports a controller's schedule for the Workshop (HookController.getStatus()): read-only, from
+ * the driver row its immutable props name. No row (the hook is disabled, or the account revoked)
+ * reports "inactive" with the registered cadence. Carries no callback or capability data.
+ */
+export async function describeScheduleController(
+  props: ScheduleControllerProps,
+  driver: Pick<ControllerDriver, "getSchedule">,
+): Promise<HookStatus> {
+  const stored = await driver.getSchedule(props.workspaceId, props.scheduleId);
+  const timeZone = scheduleTimeZone(props.spec);
+  const base: HookStatus = {
+    externalId: props.scheduleId,
+    state: "inactive",
+    cadence: describeCadence(props.spec),
+    ...(timeZone ? { timeZone } : {}),
+  };
+  if (!stored) {
+    return props.occurrences ? { ...base, occurrences: { ...props.occurrences } } : base;
+  }
+  const summary = toScheduleSummary(stored);
+  const status: HookStatus = { ...base, state: summary.status };
+  if (summary.occurrences) {
+    status.occurrences = { ...summary.occurrences, used: summary.occurrenceCount ?? 0 };
+  }
+  switch (summary.status) {
+    case "active":
+      if (summary.nextFire !== undefined) status.nextRunAt = summary.nextFire;
+      if (summary.retrying) status.retrying = true;
+      break;
+    case "dead":
+      status.endedAt = summary.failedAt;
+      status.failureCode = summary.failureCode;
+      break;
+    case "completed":
+      status.endedAt = summary.completedAt;
+      break;
+    case "expired":
+      status.endedAt = summary.expiredAt;
+      break;
+  }
+  return status;
+}
+
+function scheduleTimeZone(spec: ScheduleSpec): string | undefined {
+  return spec.kind === "interval" ? undefined : spec.timeZone;
+}
+
+/** A short English rendering of a cadence, e.g. "every 15 minutes" or "weekly on MO, TH at 09:15". */
+export function describeCadence(spec: ScheduleSpec | ScheduleCadence): string {
+  if (spec.kind === "interval") return `every ${describeDuration(spec.everyMs)}`;
+  if (spec.kind === "once") return `once at ${new Date(spec.fireAt).toISOString()}`;
+  return describeCalendarRule(spec.rule);
+}
+
+function describeCalendarRule(rule: NormalizedCalendarRule): string {
+  const minute = String(rule.minute).padStart(2, "0");
+  if (rule.freq === "hourly") {
+    const every = rule.interval === 1 ? "hourly" : `every ${rule.interval} hours`;
+    return `${every} at minute ${minute}`;
+  }
+  const time = `${String(rule.hour).padStart(2, "0")}:${minute}`;
+  if (rule.freq === "daily") {
+    const every = rule.interval === 1 ? "daily" : `every ${rule.interval} days`;
+    return `${every} at ${time}`;
+  }
+  const every = rule.interval === 1 ? "weekly" : `every ${rule.interval} weeks`;
+  return `${every} on ${rule.byDay.join(", ")} at ${time}`;
+}
+
+function describeDuration(ms: number): string {
+  const units: [number, string][] = [
+    [86_400_000, "day"],
+    [3_600_000, "hour"],
+    [60_000, "minute"],
+    [1_000, "second"],
+  ];
+  for (const [size, name] of units) {
+    if (ms % size === 0) {
+      const count = ms / size;
+      return count === 1 ? name : `${count} ${name}s`;
+    }
+  }
+  return `${ms} ms`;
+}
+
 @validateRpc()
 export class ScheduleHookController
   extends WorkerEntrypoint<Cloudflare.Env, ScheduleControllerProps>
@@ -216,6 +305,11 @@ export class ScheduleHookController
   /** Removes all driver state for this schedule activation. */
   disable(): Promise<void> {
     return disableScheduleController(this.ctx.props, this.#driver());
+  }
+
+  /** Reports this schedule's state for the Workshop's agent. Read-only. */
+  getStatus(): Promise<HookStatus> {
+    return describeScheduleController(this.ctx.props, this.#driver());
   }
 
   #driver(): DurableObjectStub<ScheduleDriver> {

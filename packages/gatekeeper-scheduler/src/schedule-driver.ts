@@ -667,7 +667,7 @@ function timeZoneOf(state: EnabledSchedule): string {
   return state.spec.kind === "interval" ? "UTC" : state.spec.timeZone;
 }
 
-function toScheduleSummary(schedule: StoredSchedule): ScheduleSummary {
+export function toScheduleSummary(schedule: StoredSchedule): ScheduleSummary {
   const common = {
     scheduleId: schedule.state.scheduleId,
     title: schedule.title,
