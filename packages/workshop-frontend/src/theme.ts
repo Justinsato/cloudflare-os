@@ -68,3 +68,15 @@ export function applyAccentColor(color: string | null | undefined): void {
 
 /** The base/default accent, shown in the admin picker when no custom color is set. */
 export const DEFAULT_ACCENT_COLOR = '#ff4801'
+
+/**
+ * The accent this deployment actually uses when none is saved. A deploy-time theme that restyles
+ * the brand color declares it as `--default-accent-color` on :root so the admin picker's "Default"
+ * swatch shows the real color, not upstream's. Admin previews write the accent inline on <html> but
+ * never this property, so a preview doesn't change the answer.
+ */
+export function defaultAccentColor(): string {
+  if (typeof document === 'undefined') return DEFAULT_ACCENT_COLOR
+  const declared = getComputedStyle(document.documentElement).getPropertyValue('--default-accent-color').trim()
+  return declared || DEFAULT_ACCENT_COLOR
+}

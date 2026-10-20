@@ -4,7 +4,7 @@ import { Switch, Textarea, Input, Button, Tabs, useKumoToastManager } from '@clo
 import { Hexagon, MagnifyingGlass, ShieldWarning, UserPlus } from '@phosphor-icons/react'
 import { useAuthenticatedApi } from './AuthContext'
 import { AdminApi, AdminFormat, AdminResourceVendor, AdminSettingsView, AmbientGatekeeperMode, MAX_INSTANCE_INSTRUCTIONS_LENGTH, MAX_ANNOUNCEMENT_LENGTH, MAX_SITE_NAME_LENGTH, DEFAULT_SITE_NAME, BannerColor, BANNER_COLORS, DEFAULT_BANNER_COLOR } from '@gadgets/workshop-shared/api'
-import { applyAccentColor, DEFAULT_ACCENT_COLOR } from './theme'
+import { applyAccentColor, defaultAccentColor } from './theme'
 import { cacheBustSiteLogoUrl, prepareSiteLogo } from './siteLogoUtils'
 import SiteLogo from './components/SiteLogo'
 import { useDocumentTitle } from './useDocumentTitle'
@@ -61,6 +61,7 @@ export default function AdminPage() {
   // Accent (brand) color: '' means the default theme. Live-previewed while editing.
   const [savedAccent, setSavedAccent] = useState('')
   const [accentDraft, setAccentDraft] = useState('')
+  const [defaultAccent] = useState(defaultAccentColor)
   const [savingAccent, setSavingAccent] = useState(false)
 
   // Site name (shown next to the top-bar logo): last-saved value + current editor draft.
@@ -608,7 +609,7 @@ export default function AdminPage() {
           <div className="flex flex-wrap items-center gap-2 mb-4">
             {ACCENT_PRESETS.map((preset) => {
               const selected = accentDraft === preset.value
-              const swatch = preset.value || DEFAULT_ACCENT_COLOR
+              const swatch = preset.value || defaultAccent
               return (
                 <button
                   key={preset.label}
@@ -634,14 +635,14 @@ export default function AdminPage() {
             <label className="flex items-center gap-2 text-sm text-kumo-default cursor-pointer">
               <input
                 type="color"
-                value={accentDraft || DEFAULT_ACCENT_COLOR}
+                value={accentDraft || defaultAccent}
                 onChange={(e) => setAccentDraft(e.target.value)}
                 className="w-9 h-9 rounded-md border border-kumo-line bg-transparent cursor-pointer p-0.5"
               />
               Custom
             </label>
             <span className="text-xs font-mono text-kumo-subtle">
-              {accentDraft || `${DEFAULT_ACCENT_COLOR} (default)`}
+              {accentDraft || `${defaultAccent} (default)`}
             </span>
             <div className="flex-1" />
             {accentDirty && (
