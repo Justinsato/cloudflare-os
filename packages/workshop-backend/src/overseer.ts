@@ -395,6 +395,15 @@ function validateChatAttachmentId(id: string): string {
 // the gatekeeper, so no lookup is ever attempted.
 const BUILTIN_TOOL_GATEKEEPER_ID = -1;
 
+// Sentinel gatekeeperId for the pending "action" records the agent's removeGadget tool queues: a
+// request for the workspace owner to remove a gadget, whose `action` key is the gadget's
+// workpiece id. Unlike BUILTIN_TOOL_GATEKEEPER_ID these do go through approve/reject, which
+// recognize the sentinel and never dereference a gatekeeper for it: approval (owner only)
+// removes the gadget via applyGadgetRemoval, rejection just records the decision. They are
+// never auto-approved (no autoApprovable verdict, and applyPendingAction refuses any
+// sentinel), so no drain applies them.
+const GADGET_REMOVAL_GATEKEEPER_ID = -2;
+
 type ExternalMessageResponseTargetRegistration = {
   idempotencyKey: string;
   chatGatewayRpcTarget: NativeRpcStub<ChatGatewayRpcTarget>;
@@ -1646,6 +1655,148 @@ class OverseerImpl implements AgentHooks {
     this.#runningChatIds.delete(id);
     this.ctx.facets.delete(facetName);
     for (let meta of proposingChats) this.storage.chatMeta.put(meta);
+  }
+
+  // Set a gadget's title: the registry write behind both GadgetClient.setTitle() (the Outputs
+  // page's rename) and the agent's renameGadget tool. The put notifies workpiece subscribers,
+  // which is how tabs and the Outputs index pick up the new title.
+  setGadgetTitle(id: WorkpieceId, title: string): void {
+    let record = this.getGadgetRecord(id);
+    record.title = title;
+    this.storage.gadgets.put(record);
+  }
+
+  // The gadget an agent's renameGadget/removeGadget call names, as the chat may see it: a gadget
+  // (not a worktree or an external resource), and not one still provisional to another chat
+  // (whose existence is that chat's unaccepted proposal). Throws agent-readable errors.
+  #agentVisibleGadget(id: WorkpieceId, forChatId: number): GadgetRecord {
+    let record = this.storage.gadgets.get(id);
+    if (!record) {
+      if (this.storage.gatekeepers.get(id)) {
+        throw new Error("That refers to an external resource, not a gadget.");
+      }
+      throw new Error(`No such gadget: ${id}`);
+    }
+    if (record.type === "worktree") {
+      if (record.chatId !== forChatId) throw new Error(`No such gadget: ${id}`);
+      throw new Error("That is a worktree, not a gadget.");
+    }
+    if (record.pending && record.pending.chatId !== forChatId) {
+      throw new Error(`No such gadget: ${id}`);
+    }
+    return record;
+  }
+
+  // The agent's renameGadget tool (see AgentHooks.renameGadget). Validates the title exactly as
+  // createGadget does, then writes it through setGadgetTitle.
+  renameGadget(id: WorkpieceId, title: string, forChatId: number)
+      : {oldTitle: string, title: string} {
+    title = title.trim();
+    if (!title) {
+      throw new Error("A gadget requires a non-empty title.");
+    }
+    let oldTitle = this.#agentVisibleGadget(id, forChatId).title;
+    this.setGadgetTitle(id, title);
+    return {oldTitle, title};
+  }
+
+  // The agent's removeGadget tool (see AgentHooks.requestGadgetRemoval): queue a pending action,
+  // under the GADGET_REMOVAL_GATEKEEPER_ID sentinel, asking the owner to remove the gadget.
+  // Removes nothing; approveAction does, through applyGadgetRemoval.
+  requestGadgetRemoval(chatId: number, id: WorkpieceId, reason: string)
+      : {actionId: number, title: string, alreadyPending: boolean} {
+    reason = reason.trim();
+    if (!reason) {
+      throw new Error("Give a reason for removing the gadget; the owner sees it when deciding.");
+    }
+    if (reason.length > 2000) {
+      throw new Error("The reason is too long. Keep it to a sentence or two.");
+    }
+    let gadget = this.#agentVisibleGadget(id, chatId);
+    if (gadget.pending) {
+      throw new Error(
+          "This gadget was created in this conversation and hasn't been accepted yet, so there " +
+          "is nothing to remove. Discarding this conversation's changes removes it.");
+    }
+
+    // One pending request per gadget: a second would put two cards in front of the owner for
+    // the same decision.
+    for (let queued of this.storage.actions.pendingByGatekeeper.get(
+        GADGET_REMOVAL_GATEKEEPER_ID)) {
+      if (queued.type === "action" && queued.action === id) {
+        return {actionId: queued.id, title: gadget.title, alreadyPending: true};
+      }
+    }
+
+    let caller: GatekeeperCaller = {from: "agent", chatId};
+    let actionId = this.storage.nextActionId.get();
+    this.storage.nextActionId.put(actionId + 1);
+    let record: ActionRecord = {
+      id: actionId,
+      gatekeeperId: GADGET_REMOVAL_GATEKEEPER_ID,
+      caller,
+      resourceTitle: gadget.title,
+      action: id,
+      createdAt: new Date(),
+      state: "pending",
+      type: "action",
+      description: {
+        title: `Remove gadget "${gadget.title}"`,
+        description:
+            "The agent asks to permanently remove this gadget from the workspace, together " +
+            "with its code, its history, and any hooks that wake it. Removal can't be undone. " +
+            "Only the workspace owner can approve it; rejecting keeps the gadget as it is.",
+        fields: [
+          {label: "Gadget", kind: "inline", value: gadget.title},
+          {label: "Reason", kind: "text", value: reason},
+        ],
+        descriptionIsComplete: true,
+        implementsRevert: false,
+      },
+    };
+    this.storage.actions.put(record);
+    // An agent caller's action is captured for the step, whose barrier appends its card to the
+    // chat after the assistant message making the call.
+    this.#associateAction(caller, actionId);
+    this.traceAgentActionApproval(record, "requested");
+    return {actionId, title: gadget.title, alreadyPending: false};
+  }
+
+  // Apply an approved removeGadget request: remove the gadget, then record the approval. The
+  // caller (approveAction) has checked the record is pending and the approver is the owner. A
+  // gadget already gone (removed by hand meanwhile) leaves nothing to do but record the decision.
+  // A failed removal throws before the record changes, so the request stays pending.
+  async applyGadgetRemoval(record: ActionRecord & {type: "action"},
+                           resolvedBy: AiChatAuthorInfo): Promise<void> {
+    if (record.gatekeeperId !== GADGET_REMOVAL_GATEKEEPER_ID || typeof record.action !== "number") {
+      throw new Error(`Not a gadget removal request: ${record.id}`);
+    }
+    // Re-read: the approver's profile fetch awaited, and a concurrent decision may have landed.
+    if (this.storage.actions.get(record.id)?.state !== "pending") {
+      throw new Error(`Action is not pending: ${record.id}`);
+    }
+    if (this.storage.gadgets.get(record.action)?.type === "gadget") {
+      await this.removeWorkpiece(record.action);
+    }
+    record.state = "approved";
+    record.appliedAt = new Date();
+    record.resolvedBy = resolvedBy;
+    record.autoApproved = false;
+    this.storage.actions.put(record);
+    this.traceAgentActionApproval(record, "approved");
+  }
+
+  // Record the owner's rejection of a removeGadget request. The gadget is untouched.
+  rejectGadgetRemoval(record: ActionRecord & {type: "action"}, resolvedBy: AiChatAuthorInfo)
+      : void {
+    if (this.storage.actions.get(record.id)?.state !== "pending") {
+      throw new Error(`Action is not pending: ${record.id}`);
+    }
+    record.state = "rejected";
+    record.appliedAt = new Date();
+    record.resolvedBy = resolvedBy;
+    this.storage.actions.put(record);
+    this.traceAgentActionApproval(record, "denied");
   }
 
   // Chat deletion's workpiece cleanup: remove the gadgets and worktrees still provisional to the
@@ -4788,6 +4939,11 @@ class OverseerImpl implements AgentHooks {
                            creation?: {creator: Fetcher<GatekeeperUserVerifier>,
                                        configuration: string | null}): Promise<void> {
     let id = record.gatekeeperId;
+    // Sentinel records (e.g. GADGET_REMOVAL_GATEKEEPER_ID) have no gatekeeper to apply through;
+    // their own approve paths handle them, so reaching here is a bug (or a drain over a sentinel).
+    if (id < 0) {
+      throw new Error("This request isn't applied through a connection.");
+    }
     // A created resource exists only once its creation applies, and that stays pending until then.
     if (record.action !== "create" && this.#creationPending(id)) {
       throw new Error("This resource doesn't exist yet. Approve its creation first.");
@@ -10905,6 +11061,17 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       throw new Error("Observations can't have 'pending' state.");
     }
 
+    // A removeGadget request: no gatekeeper, no auto-approval drain, and only the owner decides
+    // (build collaborators can see the card, but removing a gadget is the owner's call).
+    if (action.gatekeeperId === GADGET_REMOVAL_GATEKEEPER_ID) {
+      if (!this.isOwner) {
+        throw new Error("Only the workspace owner can approve removing a gadget.");
+      }
+      let profile = await this.#getClientProfile();
+      await this.impl.applyGadgetRemoval(action, profile);
+      return;
+    }
+
     // Resolve the approver's identity before applying, so a failed profile fetch can't leave the
     // action applied in the world but still "pending" in storage.
     let profile = await this.#getClientProfile();
@@ -11076,6 +11243,17 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
 
     if (action.type !== "action") {
       throw new Error(`Can't reject an observation: ${id}`);
+    }
+
+    // A removeGadget request: the owner's decision, like its approval. Rejecting just records
+    // the decision; the gadget is untouched and there is no gatekeeper to notify.
+    if (action.gatekeeperId === GADGET_REMOVAL_GATEKEEPER_ID) {
+      if (!this.isOwner) {
+        throw new Error("Only the workspace owner can decide on removing a gadget.");
+      }
+      let profile = await this.#getClientProfile();
+      this.impl.rejectGadgetRemoval(action, profile);
+      return;
     }
 
     if (action.action === "create") {
@@ -12361,9 +12539,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
   }
 
   async setTitle(title: string): Promise<void> {
-    let record = this.impl.getGadgetRecord(this.id);
-    record.title = title;
-    this.impl.storage.gadgets.put(record);
+    this.impl.setGadgetTitle(this.id, title);
   }
 
   async remove(): Promise<void> {
