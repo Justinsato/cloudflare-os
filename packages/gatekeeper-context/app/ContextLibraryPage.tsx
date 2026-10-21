@@ -456,10 +456,11 @@ export default function ContextLibraryPage() {
     );
   }
 
-  return <SkillsNavigatorPage onSelectSkill={(collectionId, manifestPath) => {
+  const openPath = (collectionId: string, path: string) => {
     setSelectedCollection(collectionId);
-    setSelectedDoc(manifestPath);
-  }} />;
+    setSelectedDoc(path);
+  };
+  return <SkillsNavigatorPage onSelectSkill={openPath} onSelectDocument={openPath} />;
 }
 
 // ---------------------------------------------------------------------------

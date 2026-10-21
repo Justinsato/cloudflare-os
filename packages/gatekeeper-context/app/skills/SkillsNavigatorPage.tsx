@@ -30,9 +30,10 @@ import { useSkillsNavigatorData } from "./useSkillsNavigatorData";
 
 type SkillsNavigatorPageProps = {
   onSelectSkill: (collectionId: string, manifestPath: string) => void;
+  onSelectDocument: (collectionId: string, path: string) => void;
 };
 
-export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps) => {
+export const SkillsNavigatorPage = ({ onSelectSkill, onSelectDocument }: SkillsNavigatorPageProps) => {
   const context = useContextApi();
   const [reloadKey, setReloadKey] = useState(0);
   const {
@@ -78,9 +79,9 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
     <main className="h-full overflow-y-auto bg-kumo-base px-5 py-8 sm:px-10 sm:py-10">
       <div className="mx-auto flex w-full max-w-4xl flex-col gap-5">
         <header>
-          <Text as="h1" variant="heading" size="lg">Skills</Text>
+          <Text as="h1" variant="heading" size="lg">Context &amp; Skills</Text>
           <Text variant="secondary" size="sm" DANGEROUS_className="mt-1 max-w-2xl">
-            Skills your agents can use, organized by collection.
+            Skills your agents can run and the reference documents they read, organized by collection.
           </Text>
         </header>
 
@@ -92,10 +93,10 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
               className="pointer-events-none absolute left-3 top-1/2 z-10 -translate-y-1/2 text-kumo-inactive"
             />
             <Input
-              aria-label="Search skills"
+              aria-label="Search skills and documents"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search skills"
+              placeholder="Search skills and documents"
               className="w-full pl-9"
             />
           </div>
@@ -175,6 +176,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
               supportsGitCollections={viewerInfo.supportsGitCollections}
               expandAll={deferredQuery.trim().length > 0}
               onSelectSkill={onSelectSkill}
+              onSelectDocument={onSelectDocument}
               onAddSkill={startAdd}
               onUploadSkills={setPendingUpload}
               onEditCollection={setPendingEditCollection}
@@ -185,7 +187,7 @@ export const SkillsNavigatorPage = ({ onSelectSkill }: SkillsNavigatorPageProps)
           ) : (
             <LayerCard className="flex min-h-[240px] items-center justify-center bg-kumo-control p-1">
               <Text variant="secondary" size="sm">
-                {query.trim() ? "No skills match your search." : "No skills are available."}
+                {query.trim() ? "Nothing matches your search." : "No skills or documents are available."}
               </Text>
             </LayerCard>
           )}

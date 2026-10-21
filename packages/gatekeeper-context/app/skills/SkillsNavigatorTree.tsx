@@ -3,6 +3,7 @@ import {
   ArrowClockwise,
   Buildings,
   Clock,
+  FileText,
   GitBranch,
   PencilSimple,
   PlusIcon,
@@ -30,9 +31,11 @@ import {
 } from "./moveSkillNavigatorNode";
 import { renamedSkillManifestPath, renameSkillNavigatorNode } from "./renameSkillNavigatorNode";
 import {
+  countDocuments,
   countSkills,
   type SkillNavigatorCollection,
   type SkillNavigatorDirectory,
+  type SkillNavigatorDocument,
   type SkillNavigatorNode,
   type SkillNavigatorSkill,
 } from "./skillNavigatorModel";
@@ -49,6 +52,7 @@ type SkillsNavigatorTreeProps = {
   supportsGitCollections: boolean;
   expandAll: boolean;
   onSelectSkill: (collectionId: string, manifestPath: string) => void;
+  onSelectDocument: (collectionId: string, path: string) => void;
   onAddSkill: (target: AddSkillTarget) => void;
   onUploadSkills: (target: UploadSkillsTarget) => void;
   onEditCollection: (collection: ContextCollectionMetadata) => void;
@@ -59,7 +63,24 @@ type SkillsNavigatorTreeProps = {
 
 type PendingRename = { collectionId: string; path: string; name: string };
 
-const skillCountLabel = (count: number) => `${count} ${count === 1 ? "skill" : "skills"}`;
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? "" : "s"}`;
+
+/** "3 skills", "2 documents" or "3 skills · 2 documents"; skills alone when there are no documents. */
+const contentsLabel = (nodes: readonly SkillNavigatorNode[]) => {
+  const skills = countSkills(nodes);
+  const documents = countDocuments(nodes);
+  if (documents === 0) return plural(skills, "skill");
+  if (skills === 0) return plural(documents, "document");
+  return `${plural(skills, "skill")} · ${plural(documents, "document")}`;
+};
+
+/** "writing-and-model-standards.md" -> "Writing and model standards"; README stays as is. */
+export const documentTitle = (fileName: string) => {
+  const stem = fileName.replace(/\.(md|markdown|txt)$/i, "");
+  if (stem === stem.toUpperCase()) return stem;
+  const words = stem.replace(/[-_]+/g, " ").trim();
+  return words.charAt(0).toUpperCase() + words.slice(1);
+};
 
 const relativeUpdatedAt = (date: Date, now: number) => {
   const age = formatSkillUpdatedAt(date, now);
@@ -68,12 +89,13 @@ const relativeUpdatedAt = (date: Date, now: number) => {
 
 const nodeId = (collectionId: string, node: SkillNavigatorNode) => node.type === "skill"
   ? `${collectionId}:skill:${node.manifestPath}`
-  : `${collectionId}:directory:${node.path}`;
+  : `${collectionId}:${node.type}:${node.path}`;
 
 const toListItem = (
   collectionId: string,
   node: SkillNavigatorNode,
   skillsById: Map<string, SkillNavigatorSkill>,
+  documentsById: Map<string, SkillNavigatorDocument>,
   directoriesById: Map<string, SkillNavigatorDirectory>,
   moveSourcesById: Map<string, SkillNavigatorMoveSource>,
   moveTargetsById: Map<string, SkillNavigatorMoveTarget>,
@@ -116,6 +138,26 @@ const toListItem = (
     };
   }
 
+  if (node.type === "document") {
+    documentsById.set(id, node);
+    return {
+      id,
+      name: documentTitle(node.name),
+      icon: <FileText aria-hidden size={17} className="text-kumo-subtle" />,
+      description: node.description,
+      metadata: (
+        <span
+          className="flex items-center gap-1"
+          aria-label={skillUpdatedAtLabel(node.lastUpdated, now)}
+          title={`Updated ${node.lastUpdated.toLocaleString()}`}
+        >
+          <Clock aria-hidden size={12} />
+          <span aria-hidden>{relativeUpdatedAt(node.lastUpdated, now)}</span>
+        </span>
+      ),
+    };
+  }
+
   directoriesById.set(id, node);
   if (writable) {
     moveTargetsById.set(id, { collectionId, directoryPath: node.path });
@@ -123,12 +165,13 @@ const toListItem = (
   return {
     id,
     name: node.name,
-    metadata: skillCountLabel(countSkills(node.children)),
+    metadata: contentsLabel(node.children),
     droppable: writable,
     children: node.children.map((child) => toListItem(
       collectionId,
       child,
       skillsById,
+      documentsById,
       directoriesById,
       moveSourcesById,
       moveTargetsById,
@@ -140,7 +183,7 @@ const toListItem = (
   };
 };
 
-/** Interactive skill hierarchy with actions limited to writable collections. */
+/** Interactive skill and reference-document hierarchy with actions limited to writable collections. */
 export const SkillsNavigatorTree = ({
   navigator,
   collectionMetadata,
@@ -150,6 +193,7 @@ export const SkillsNavigatorTree = ({
   supportsGitCollections,
   expandAll,
   onSelectSkill,
+  onSelectDocument,
   onAddSkill,
   onUploadSkills,
   onEditCollection,
@@ -172,6 +216,7 @@ export const SkillsNavigatorTree = ({
   const [now, setNow] = useState(Date.now);
   const treeRef = useRef<HTMLDivElement>(null);
   const skillsById = new Map<string, SkillNavigatorSkill>();
+  const documentsById = new Map<string, SkillNavigatorDocument>();
   const directoriesById = new Map<string, SkillNavigatorDirectory>();
   const collectionsById = new Map<string, SkillNavigatorCollection>();
   const moveSourcesById = new Map<string, SkillNavigatorMoveSource>();
@@ -210,6 +255,7 @@ export const SkillsNavigatorTree = ({
         collection.id,
         child,
         skillsById,
+        documentsById,
         directoriesById,
         moveSourcesById,
         moveTargetsById,
@@ -225,6 +271,7 @@ export const SkillsNavigatorTree = ({
       icon: collection.icon ? <span aria-hidden>{collection.icon}</span> : undefined,
       metadata: metadata ? (
         <span className="flex items-center gap-3">
+          {children.length > 0 && <span>{contentsLabel(children)}</span>}
           <span className="flex items-center gap-1">
             {metadata.visibility === "public"
               ? <Buildings aria-hidden size={12} />
@@ -248,7 +295,7 @@ export const SkillsNavigatorTree = ({
             </span>
           )}
         </span>
-      ) : undefined,
+      ) : children.length > 0 ? contentsLabel(children) : undefined,
       droppable: writable,
       children: listChildren,
     };
@@ -538,7 +585,12 @@ export const SkillsNavigatorTree = ({
           return;
         }
         const skill = skillsById.get(item.id);
-        if (skill) onSelectSkill(skill.collectionId, skill.manifestPath);
+        if (skill) {
+          onSelectSkill(skill.collectionId, skill.manifestPath);
+          return;
+        }
+        const reference = documentsById.get(item.id);
+        if (reference) onSelectDocument(reference.collectionId, reference.path);
       }}
       renderContextMenu={renderContextMenu}
       rename={{

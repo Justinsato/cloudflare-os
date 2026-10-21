@@ -21,7 +21,17 @@ export type SkillNavigatorDirectory = {
   children: SkillNavigatorNode[];
 };
 
-export type SkillNavigatorNode = SkillNavigatorDirectory | SkillNavigatorSkill;
+/** A reference document (any file that isn't a skill or one of a skill's supporting files). */
+export type SkillNavigatorDocument = {
+  type: "document";
+  collectionId: string;
+  path: string;
+  name: string;
+  description: string;
+  lastUpdated: Date;
+};
+
+export type SkillNavigatorNode = SkillNavigatorDirectory | SkillNavigatorSkill | SkillNavigatorDocument;
 
 export type SkillNavigatorCollection = {
   collection: EnabledCollectionInfo;
@@ -38,8 +48,10 @@ const baseName = (path: string) => {
   return slash < 0 ? path : path.slice(slash + 1);
 };
 
+const NODE_ORDER: Record<SkillNavigatorNode["type"], number> = { directory: 0, skill: 1, document: 2 };
+
 const compareNodes = (left: SkillNavigatorNode, right: SkillNavigatorNode) => {
-  if (left.type !== right.type) return left.type === "directory" ? -1 : 1;
+  if (left.type !== right.type) return NODE_ORDER[left.type] - NODE_ORDER[right.type];
   return left.name.localeCompare(right.name);
 };
 
@@ -75,8 +87,30 @@ export const buildSkillNavigator = (
       return directory;
     };
 
-    for (const document of documentsByCollection.get(collection.id) ?? []) {
-      if (!document.skillName) continue;
+    const documents = documentsByCollection.get(collection.id) ?? [];
+    // A skill owns its directory, so files under it are supporting files rather than documents.
+    const skillDirectories = documents
+      .filter((document) => document.skillName)
+      .map((document) => directoryName(document.path));
+    const insideSkill = (path: string) => skillDirectories.some((directory) =>
+      directory === "" ? false : path.startsWith(`${directory}/`));
+
+    for (const document of documents) {
+      if (!document.skillName) {
+        if (insideSkill(document.path)) continue;
+        const parent = directoryName(document.path);
+        const node: SkillNavigatorDocument = {
+          type: "document",
+          collectionId: collection.id,
+          path: document.path,
+          name: baseName(document.path),
+          description: document.description,
+          lastUpdated: document.lastUpdated,
+        };
+        if (parent) getDirectory(parent).children.push(node);
+        else children.push(node);
+        continue;
+      }
 
       const skillDirectory = directoryName(document.path);
       const parentDirectory = directoryName(skillDirectory);
@@ -113,6 +147,12 @@ const filterNodes = (
       }
       continue;
     }
+    if (node.type === "document") {
+      if (includesQuery(node.name, query) || includesQuery(node.description, query)) {
+        matches.push(node);
+      }
+      continue;
+    }
 
     if (includesQuery(node.name, query)) {
       matches.push(node);
@@ -142,6 +182,15 @@ export const filterSkillNavigator = (
 };
 
 export const countSkills = (nodes: readonly SkillNavigatorNode[]): number => nodes.reduce(
-  (count, node) => count + (node.type === "skill" ? 1 : countSkills(node.children)),
+  (count, node) => count + (node.type === "skill"
+    ? 1
+    : node.type === "directory" ? countSkills(node.children) : 0),
+  0,
+);
+
+export const countDocuments = (nodes: readonly SkillNavigatorNode[]): number => nodes.reduce(
+  (count, node) => count + (node.type === "document"
+    ? 1
+    : node.type === "directory" ? countDocuments(node.children) : 0),
   0,
 );
