@@ -31,6 +31,7 @@ import DeleteConfirmationDialog from '../DeleteConfirmationDialog'
 import SidebarGadgetRow from './SidebarGadgetRow'
 import { siteConfig } from '../../siteConfig'
 import { workspaceNavSections } from '../../workspaceNavOrder'
+import { WORKSPACES_CHANGED_EVENT } from '../../workspaceListBus'
 
 // Cap on items shown in the Recent list before the user clicks through to /workspaces.
 const RECENT_INITIAL_LIMIT = 6
@@ -93,21 +94,38 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
     authenticatedApi.whoami().then(setCurrentUser).catch(() => {})
   }, [authenticatedApi])
 
-  // Load gadgets. Refresh on mount + after mutation; no live subscription yet.
+  // Load gadgets on mount, then refetch quietly whenever a workspace reports a title change or a new
+  // workspace opens (WORKSPACES_CHANGED_EVENT), and when the tab comes back into view, so renames
+  // and new workspaces show without a reload. No live subscription yet.
   useEffect(() => {
     let cancelled = false
-    setGadgetsLoading(true)
-    authenticatedApi.listGadgets()
-      .then((list) => {
-        if (cancelled) return
-        setGadgets(list)
-        setGadgetsLoading(false)
-      })
-      .catch((err) => {
-        logRpcFailure('Failed to load workspaces for sidebar:', err)
-        if (!cancelled) setGadgetsLoading(false)
-      })
-    return () => { cancelled = true }
+    let seq = 0
+    const load = (initial: boolean) => {
+      const mine = ++seq
+      if (initial) setGadgetsLoading(true)
+      authenticatedApi.listGadgets()
+        .then((list) => {
+          if (cancelled || mine !== seq) return
+          setGadgets(list)
+          setGadgetsLoading(false)
+        })
+        .catch((err) => {
+          logRpcFailure('Failed to load workspaces for sidebar:', err)
+          if (!cancelled && initial) setGadgetsLoading(false)
+        })
+    }
+    load(true)
+    const refresh = () => load(false)
+    const onVisible = () => { if (document.visibilityState === 'visible') refresh() }
+    window.addEventListener(WORKSPACES_CHANGED_EVENT, refresh)
+    window.addEventListener('focus', refresh)
+    document.addEventListener('visibilitychange', onVisible)
+    return () => {
+      cancelled = true
+      window.removeEventListener(WORKSPACES_CHANGED_EVENT, refresh)
+      window.removeEventListener('focus', refresh)
+      document.removeEventListener('visibilitychange', onVisible)
+    }
   }, [authenticatedApi])
 
   // Dispose share overseer on close / unmount.
