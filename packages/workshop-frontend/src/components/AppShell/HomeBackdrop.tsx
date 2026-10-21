@@ -1,29 +1,26 @@
 /**
- * Home backdrop for a deployment with its own Home: a soft brand-colored glow at the top center over
- * a hairline grid, both fading out before the composer. Pure CSS on theme tokens, so it follows the
- * deployment's palette in light and dark.
+ * Home backdrop for a deployment with its own Home: two nested hairline chevrons, the V of the
+ * family office mark, drawn in `--home-line-1` and `--home-line-2` (falling back to the brand text
+ * color) and fading out above the composer. A dual-brand theme gives each line its own color.
  */
 export default function HomeBackdrop() {
-  const fade = 'radial-gradient(ellipse 70% 100% at 50% 0%, #000 30%, transparent 75%)'
+  const fade = 'linear-gradient(to bottom, #000 0%, #000 35%, transparent 90%)'
+  const line = (n: 1 | 2) => `var(--home-line-${n}, var(--text-color-kumo-brand))`
   return (
-    <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[520px] overflow-hidden">
-      <div
-        className="absolute inset-0"
-        style={{
-          backgroundImage:
-            'linear-gradient(to right, var(--color-kumo-line) 1px, transparent 1px),'
-            + ' linear-gradient(to bottom, var(--color-kumo-line) 1px, transparent 1px)',
-          backgroundSize: '48px 48px',
-          backgroundPosition: 'center top',
-          opacity: 0.55,
-          maskImage: fade,
-          WebkitMaskImage: fade,
-        }}
-      />
-      <div
-        className="absolute left-1/2 top-[-220px] h-[440px] w-[880px] max-w-[160vw] -translate-x-1/2 rounded-full blur-3xl"
-        style={{ background: 'color-mix(in srgb, var(--color-kumo-brand) 14%, transparent)' }}
-      />
+    <div
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[420px] overflow-hidden"
+      style={{ maskImage: fade, WebkitMaskImage: fade }}
+    >
+      <svg
+        className="absolute left-1/2 top-0 h-full w-[1200px] -translate-x-1/2"
+        viewBox="0 0 1200 420"
+        fill="none"
+        preserveAspectRatio="xMidYMin meet"
+      >
+        <path d="M120 -1 L600 330 L1080 -1" stroke={line(1)} strokeOpacity={0.45} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+        <path d="M200 -1 L600 276 L1000 -1" stroke={line(2)} strokeOpacity={0.45} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+      </svg>
     </div>
   )
 }

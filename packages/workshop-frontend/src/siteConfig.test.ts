@@ -49,7 +49,9 @@ describe('parseSiteConfig', () => {
         groups: [{ label: 'Tools', workspaceIds: ['t'], links: ['outputs', 'nope', 3] }],
       },
       workspaces: { b9: { theme: 'back9' }, bad: { theme: 'x y' } },
+      home: { title: 'T', priorities: [], theme: 'dual' },
     })
+    expect(config.home?.theme).toBe('dual')
     expect(config.nav).toEqual({
       buildSection: true,
       buildAfterGroup: 'Operating companies',

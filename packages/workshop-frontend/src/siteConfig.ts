@@ -23,6 +23,8 @@ export interface HomeConfig {
   subtitle?: string
   prioritiesLabel?: string
   priorities: HomePriority[]
+  /** Brand theme for Home, set as `data-workspace-theme` on <html> while Home is open. */
+  theme?: string
 }
 
 /** A labelled sidebar group of workspaces, listed in the given order. */
@@ -62,6 +64,7 @@ export interface SiteConfig {
 }
 
 const isString = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
+const isThemeName = (v: unknown): v is string => typeof v === 'string' && /^[a-z0-9-]+$/.test(v)
 
 function parsePriority(v: unknown): HomePriority | null {
   if (!v || typeof v !== 'object') return null
@@ -89,6 +92,7 @@ function parseHome(v: unknown): HomeConfig | undefined {
     subtitle: isString(h.subtitle) ? h.subtitle : undefined,
     prioritiesLabel: isString(h.prioritiesLabel) ? h.prioritiesLabel : undefined,
     priorities,
+    ...(isThemeName(h.theme) ? { theme: h.theme } : {}),
   }
 }
 
@@ -126,7 +130,7 @@ function parseWorkspaces(v: unknown): Record<string, WorkspaceSiteConfig> | unde
     const e = entry as Record<string, unknown>
     const settings: WorkspaceSiteConfig = {
       ...(isString(e.assistantName) ? { assistantName: e.assistantName } : {}),
-      ...(isString(e.theme) && /^[a-z0-9-]+$/.test(e.theme) ? { theme: e.theme } : {}),
+      ...(isThemeName(e.theme) ? { theme: e.theme } : {}),
     }
     if (Object.keys(settings).length > 0) out[id] = settings
   }

@@ -8,6 +8,7 @@ import HomeBackdrop from "../components/AppShell/HomeBackdrop";
 import HomeTaskSuggestions from "../components/AppShell/HomeTaskSuggestions";
 import HomePriorities from "../components/AppShell/HomePriorities";
 import { siteConfig } from "../siteConfig";
+import { useSiteTheme } from "../useWorkspaceTheme";
 import { useAuthenticatedApi } from "../AuthContext";
 import { RpcStub } from "capnweb";
 import {
@@ -57,6 +58,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
   const navigate = useNavigate();
   // Deployment headline and strategic priorities, when the deploy inlines a site config.
   const home = siteConfig().home;
+  useSiteTheme(home?.theme);
   const toasts = useKumoToastManager();
 
   const [models, setModels] = useState<AiChatAuthorInfo[]>([]);
@@ -196,15 +198,15 @@ export function HomePageContent({ prompt }: HomeSearch) {
         {/* Hero */}
         <header className="text-center">
           {home?.eyebrow && (
-            <p className="mb-3 text-[12px] font-medium uppercase tracking-[0.08em] text-kumo-subtle">
+            <p className="mb-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-kumo-brand">
               {home.eyebrow}
               <span aria-hidden="true" className="mx-2 text-kumo-inactive">·</span>
-              <span className="normal-case tracking-normal">{todayLabel()}</span>
+              <span className="font-medium normal-case tracking-normal text-kumo-subtle">{todayLabel()}</span>
             </p>
           )}
           <h1
             className={home
-              ? "text-[34px] font-semibold leading-[1.1] tracking-[-0.035em] text-kumo-strong sm:text-[44px]"
+              ? "text-[40px] leading-[1.08] tracking-[-0.01em] text-kumo-strong sm:text-[56px]"
               : "text-3xl font-semibold tracking-tight leading-tight text-kumo-default sm:text-4xl"}
           >
             {home?.title ?? "What are we working on?"}
