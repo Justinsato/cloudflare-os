@@ -16,6 +16,14 @@ export interface HomePriority {
   icon?: string
 }
 
+/** An entity under the deployment's name on Home, linked to its workspace when it has one. */
+export interface HomeEntity {
+  label: string
+  workspaceId?: string
+  /** Site theme whose accent marks the entity's box ("back9"). */
+  theme?: string
+}
+
 /** Deployment copy for Home. */
 export interface HomeConfig {
   eyebrow?: string
@@ -23,6 +31,8 @@ export interface HomeConfig {
   subtitle?: string
   prioritiesLabel?: string
   priorities: HomePriority[]
+  /** Entities shown under the headline, joined to it by connector lines. */
+  entities?: HomeEntity[]
   /** Brand theme for Home, set as `data-workspace-theme` on <html> while Home is open. */
   theme?: string
 }
@@ -79,6 +89,17 @@ function parsePriority(v: unknown): HomePriority | null {
   }
 }
 
+function parseEntity(v: unknown): HomeEntity | null {
+  if (!v || typeof v !== 'object') return null
+  const e = v as Record<string, unknown>
+  if (!isString(e.label)) return null
+  return {
+    label: e.label,
+    ...(isString(e.workspaceId) ? { workspaceId: e.workspaceId } : {}),
+    ...(isThemeName(e.theme) ? { theme: e.theme } : {}),
+  }
+}
+
 function parseHome(v: unknown): HomeConfig | undefined {
   if (!v || typeof v !== 'object') return undefined
   const h = v as Record<string, unknown>
@@ -92,6 +113,9 @@ function parseHome(v: unknown): HomeConfig | undefined {
     subtitle: isString(h.subtitle) ? h.subtitle : undefined,
     prioritiesLabel: isString(h.prioritiesLabel) ? h.prioritiesLabel : undefined,
     priorities,
+    ...(Array.isArray(h.entities)
+      ? { entities: h.entities.map(parseEntity).filter((e): e is HomeEntity => e !== null) }
+      : {}),
     ...(isThemeName(h.theme) ? { theme: h.theme } : {}),
   }
 }

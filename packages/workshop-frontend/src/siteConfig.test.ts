@@ -49,9 +49,18 @@ describe('parseSiteConfig', () => {
         groups: [{ label: 'Tools', workspaceIds: ['t'], links: ['outputs', 'nope', 3] }],
       },
       workspaces: { b9: { theme: 'back9' }, bad: { theme: 'x y' } },
-      home: { title: 'T', priorities: [], theme: 'dual' },
+      home: {
+        title: 'T',
+        priorities: [],
+        theme: 'dual',
+        entities: [{ label: 'Back9 Trades', workspaceId: 'b9', theme: 'back9' }, { label: 'Hospitality' }, { nope: 1 }],
+      },
     })
     expect(config.home?.theme).toBe('dual')
+    expect(config.home?.entities).toEqual([
+      { label: 'Back9 Trades', workspaceId: 'b9', theme: 'back9' },
+      { label: 'Hospitality' },
+    ])
     expect(config.nav).toEqual({
       buildSection: true,
       buildAfterGroup: 'Operating companies',
