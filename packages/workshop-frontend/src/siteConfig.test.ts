@@ -40,4 +40,21 @@ describe('parseSiteConfig', () => {
     })
     expect(config.nav).toEqual({ buildSection: true, groups: [{ label: 'Portfolio', workspaceIds: ['a', 'b'] }] })
   })
+
+  it('reads group links, build placement and workspace themes, dropping unknown values', () => {
+    const config = parseSiteConfig({
+      nav: {
+        buildSection: true,
+        buildAfterGroup: 'Operating companies',
+        groups: [{ label: 'Tools', workspaceIds: ['t'], links: ['outputs', 'nope', 3] }],
+      },
+      workspaces: { b9: { theme: 'back9' }, bad: { theme: 'x y' } },
+    })
+    expect(config.nav).toEqual({
+      buildSection: true,
+      buildAfterGroup: 'Operating companies',
+      groups: [{ label: 'Tools', workspaceIds: ['t'], links: ['outputs'] }],
+    })
+    expect(config.workspaces).toEqual({ b9: { theme: 'back9' } })
+  })
 })

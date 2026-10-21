@@ -1,6 +1,7 @@
 import { logRpcFailure } from '../../rpcErrors'
 import {
   createContext,
+  Fragment,
   useCallback,
   useContext,
   useEffect,
@@ -288,7 +289,17 @@ export function SidebarWorkspacesTools({ collapsed = false }: { collapsed?: bool
  * region. In collapsed mode shows a compact avatar stack.
  * ─────────────────────────────────────────────────────────────────────────────
  */
-export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: boolean }) {
+export function SidebarWorkspacesLists({
+  collapsed = false,
+  groupLead,
+  afterGroup,
+}: {
+  collapsed?: boolean
+  /** Rows listed at the top of a deployment group (app pages such as Outputs), keyed by group label. */
+  groupLead?: Record<string, ReactNode>
+  /** Sections rendered right after a deployment group (the Build section), keyed by group label. */
+  afterGroup?: Record<string, ReactNode>
+}) {
   const {
     search,
     favorites,
@@ -339,9 +350,10 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
   return (
     <div className="flex flex-col pb-3">
       {/* Deployment groups, in configured order. */}
-      {groups.map((group) => (group.items.length === 0 && (search || !gadgetsLoading) ? null : (
+      {groups.map((group) => (
+        <Fragment key={group.label}>
+        {group.items.length === 0 && (search || (!gadgetsLoading && !groupLead?.[group.label])) ? null : (
         <SidebarSection
-          key={group.label}
           label={group.label}
           open={!closedGroups.has(group.label)}
           onToggle={() => toggleGroup(group.label)}
@@ -354,6 +366,7 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
             </div>
           ) : (
             <div className="flex flex-col">
+              {!search && groupLead?.[group.label]}
               {group.items.map((g) => (
                 <SidebarGadgetRow
                   key={g.id}
@@ -367,7 +380,10 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
             </div>
           )}
         </SidebarSection>
-      )))}
+        )}
+        {afterGroup?.[group.label]}
+        </Fragment>
+      ))}
 
       {/* Favorites */}
       {(!grouped || favorites.length > 0) && (
@@ -452,8 +468,8 @@ export function SidebarWorkspacesLists({ collapsed = false }: { collapsed?: bool
   )
 }
 
-// A collapsible group header used by SidebarWorkspacesLists.
-function SidebarSection({
+/** A collapsible group header used by SidebarWorkspacesLists and the Sidebar's Build section. */
+export function SidebarSection({
   label,
   count,
   icon,

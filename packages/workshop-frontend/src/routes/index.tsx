@@ -4,6 +4,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useKumoToastManager } from "@cloudflare/kumo";
 import { ChatComposer } from "../features/chat/composer/ChatComposer";
 import MeshBackground from "../components/MeshBackground";
+import HomeBackdrop from "../components/AppShell/HomeBackdrop";
 import HomeTaskSuggestions from "../components/AppShell/HomeTaskSuggestions";
 import HomePriorities from "../components/AppShell/HomePriorities";
 import { siteConfig } from "../siteConfig";
@@ -171,8 +172,13 @@ export function HomePageContent({ prompt }: HomeSearch) {
     // Flat enterprise treatment: no mesh, no watermark hexagon, no prompt-glow. The AppShell's
     // <main> already supplies a faint dotted grid as the page background.
     <div className="relative isolate flex min-h-full w-full flex-col items-center justify-start px-4 pb-16 pt-10 sm:px-8 sm:pt-16 lg:pt-24">
-      {/* The brand hex mesh, restored and de-warmed for the new system: a gentle perspective hex
-          grid receding upward. Masked to fade out before the composer so it stays a quiet backdrop. */}
+      {home ? (
+        // A deployment with its own Home gets its own backdrop: a faint brand-tinted field and a
+        // hairline grid that fade out above the composer, in place of the upstream hex mesh.
+        <HomeBackdrop />
+      ) : (
+      /* The brand hex mesh, restored and de-warmed for the new system: a gentle perspective hex
+          grid receding upward. Masked to fade out before the composer so it stays a quiet backdrop. */
       <div
         aria-hidden="true"
         className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[460px] overflow-hidden"
@@ -185,15 +191,22 @@ export function HomePageContent({ prompt }: HomeSearch) {
       >
         <MeshBackground />
       </div>
+      )}
       <div className="flex w-full max-w-2xl flex-col items-stretch gap-8">
         {/* Hero */}
         <header className="text-center">
           {home?.eyebrow && (
-            <p className="mb-2 text-[12px] font-medium uppercase tracking-[0.08em] text-kumo-subtle">
+            <p className="mb-3 text-[12px] font-medium uppercase tracking-[0.08em] text-kumo-subtle">
               {home.eyebrow}
+              <span aria-hidden="true" className="mx-2 text-kumo-inactive">·</span>
+              <span className="normal-case tracking-normal">{todayLabel()}</span>
             </p>
           )}
-          <h1 className="text-3xl font-semibold tracking-tight leading-tight text-kumo-default sm:text-4xl">
+          <h1
+            className={home
+              ? "text-[34px] font-semibold leading-[1.1] tracking-[-0.035em] text-kumo-strong sm:text-[44px]"
+              : "text-3xl font-semibold tracking-tight leading-tight text-kumo-default sm:text-4xl"}
+          >
             {home?.title ?? "What are we working on?"}
           </h1>
           {(home ? home.subtitle : true) && (
@@ -226,9 +239,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
         />
 
         {/* A few example work tasks to spark ideas. Picking one seeds the composer above. */}
-        {home ? (
-          <HomePriorities label={home.prioritiesLabel ?? "Priorities"} priorities={home.priorities} />
-        ) : (
+        {!home && (
           <HomeTaskSuggestions
             onPick={(suggestion) =>
               setSeed((prev) => ({ text: suggestion, nonce: (prev?.nonce ?? 0) + 1 }))
@@ -236,6 +247,19 @@ export function HomePageContent({ prompt }: HomeSearch) {
           />
         )}
       </div>
+
+      {/* The deployment's strategic priorities get a wider band than the composer column, so six
+          read as a 3 x 2 grid of cards on desktop. */}
+      {home && (
+        <div className="mt-12 w-full max-w-4xl">
+          <HomePriorities label={home.prioritiesLabel ?? "Priorities"} priorities={home.priorities} />
+        </div>
+      )}
     </div>
   );
+}
+
+/** "Tuesday, October 21" in the viewer's locale and time zone. */
+function todayLabel(): string {
+  return new Date().toLocaleDateString(undefined, { weekday: "long", month: "long", day: "numeric" });
 }
