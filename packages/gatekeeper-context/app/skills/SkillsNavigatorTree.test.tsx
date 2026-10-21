@@ -41,6 +41,13 @@ const navigator = (collectionId: string): SkillNavigatorCollection[] => [{
       description: "Review code",
       lastUpdated: new Date(Date.now() - 12 * 60_000),
     }],
+  }, {
+    type: "document",
+    collectionId,
+    path: "writing-and-model-standards.md",
+    name: "writing-and-model-standards.md",
+    description: "House writing rules",
+    lastUpdated: new Date(Date.now() - 3 * 60_000),
   }],
 }];
 
@@ -79,6 +86,7 @@ describe("SkillsNavigatorTree", () => {
     source = "web",
     visibility = "private",
     onUploadSkills = () => {},
+    onSelectDocument = () => {},
   }: {
     writable: boolean;
     manageable?: boolean;
@@ -88,6 +96,7 @@ describe("SkillsNavigatorTree", () => {
     source?: "web" | "git";
     visibility?: ContextCollectionMetadata["visibility"];
     onUploadSkills?: (target: UploadSkillsTarget) => void;
+    onSelectDocument?: (collectionId: string, path: string) => void;
   }) => {
     container = document.createElement("div");
     document.body.append(container);
@@ -117,6 +126,7 @@ describe("SkillsNavigatorTree", () => {
             supportsGitCollections
             expandAll
             onSelectSkill={() => {}}
+            onSelectDocument={onSelectDocument}
             onAddSkill={() => {}}
             onUploadSkills={onUploadSkills}
             onEditCollection={() => {}}
@@ -287,6 +297,24 @@ describe("SkillsNavigatorTree", () => {
       directoryPath: "legacy",
       collectionEditable: false,
     });
+  });
+
+  it("lists reference documents that open in the collection editor", () => {
+    const onSelectDocument = vi.fn<(collectionId: string, path: string) => void>();
+    renderTree({ writable: true, onSelectDocument });
+    const documentRow = row("Writing and model standards");
+
+    expect(documentRow?.textContent).toContain("House writing rules");
+    expect(documentRow?.textContent).toContain("3m ago");
+    expect(documentRow?.draggable).toBe(false);
+    act(() => documentRow?.click());
+    expect(onSelectDocument).toHaveBeenCalledWith("collection", "writing-and-model-standards.md");
+  });
+
+  it("counts documents alongside skills on the collection", () => {
+    renderTree({ writable: false });
+
+    expect(row("collection")?.textContent).toContain("1 skill · 1 document");
   });
 
   it("starts inline renaming after the skill context menu closes", () => {

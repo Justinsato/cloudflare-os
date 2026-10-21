@@ -5,6 +5,8 @@ import type {
 } from "../../src/context-types";
 import {
   buildSkillNavigator,
+  countDocuments,
+  countSkills,
   filterSkillNavigator,
 } from "./skillNavigatorModel";
 
@@ -33,7 +35,7 @@ const document = (
 });
 
 describe("skillNavigatorModel", () => {
-  it("lists collections, skill ancestors, and skills without context documents", () => {
+  it("lists collections, skill ancestors, skills, and reference documents", () => {
     const collections = [collection("product", "Product"), collection("empty", "Empty")];
     const documents = new Map([
       ["product", [
@@ -52,6 +54,16 @@ describe("skillNavigatorModel", () => {
       {
         collection: { title: "Product" },
         children: [
+          {
+            type: "directory",
+            path: "context",
+            children: [{
+              type: "document",
+              path: "context/roadmap.md",
+              name: "roadmap.md",
+              description: "Context only",
+            }],
+          },
           {
             type: "directory",
             path: "skills",
@@ -97,6 +109,57 @@ describe("skillNavigatorModel", () => {
     ]);
     expect(filterSkillNavigator(navigator, "launch")[0].children).toEqual(navigator[0].children);
     expect(filterSkillNavigator(navigator, "missing")).toEqual([]);
+  });
+
+  it("lists a collection of plain documents and hides a skill's supporting files", () => {
+    const navigator = buildSkillNavigator(
+      [collection("standards", "Standards")],
+      new Map([["standards", [
+        document("README.md", { description: "Index" }),
+        document("writing.md"),
+        document("apps/01-leasing.md"),
+        document("apps/02-brickston.md"),
+        document("skills/release/SKILL.md", { skillName: "release" }),
+        document("skills/release/references/checklist.md"),
+      ]]]),
+    );
+
+    expect(navigator[0].children).toEqual([
+      expect.objectContaining({
+        type: "directory",
+        path: "apps",
+        children: [
+          expect.objectContaining({ type: "document", path: "apps/01-leasing.md" }),
+          expect.objectContaining({ type: "document", path: "apps/02-brickston.md" }),
+        ],
+      }),
+      expect.objectContaining({
+        type: "directory",
+        path: "skills",
+        children: [expect.objectContaining({ type: "skill", name: "release" })],
+      }),
+      expect.objectContaining({ type: "document", path: "README.md", collectionId: "standards" }),
+      expect.objectContaining({ type: "document", path: "writing.md" }),
+    ]);
+    expect(countDocuments(navigator[0].children)).toBe(4);
+    expect(countSkills(navigator[0].children)).toBe(1);
+  });
+
+  it("matches documents by file name and description", () => {
+    const navigator = buildSkillNavigator(
+      [collection("standards", "Standards")],
+      new Map([["standards", [
+        document("writing-standards.md", { description: "House writing rules" }),
+        document("apps/03-watch.md", { description: "Permits and violations" }),
+      ]]]),
+    );
+
+    expect(filterSkillNavigator(navigator, "writing")[0].children).toMatchObject([
+      { type: "document", path: "writing-standards.md" },
+    ]);
+    expect(filterSkillNavigator(navigator, "violations")[0].children).toMatchObject([
+      { path: "apps", children: [{ type: "document", path: "apps/03-watch.md" }] },
+    ]);
   });
 
   it("keeps an empty collection when its metadata matches", () => {
