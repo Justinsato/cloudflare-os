@@ -674,7 +674,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           // styled with @media (prefers-color-scheme: dark) follow the workspace switch.
           colorScheme: resolvedTheme,
         }}
-        sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+        // allow-downloads: a gadget can hand the viewer a file it already holds (a report's PDF, a
+        // workbook) with an <a download> link on a blob: URL, on a click.
+        sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads"
         title="Gadget UI"
       />
     </div>

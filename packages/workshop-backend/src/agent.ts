@@ -771,6 +771,8 @@ Add columns by deriving them from the title (for example, splitting a naming con
 
 Note that the iframe sandbox on the client side prohibits modal popup boxes like alert() and confirm(), so do not use those.
 
+To let the viewer save a file the gadget holds (bytes a binding returned, such as base64 from a download method), build a Blob in client.js and click an <a download> link on its object URL from a button the viewer pressed. The sandbox allows downloads; it does not allow navigating the page to the file.
+
 ## Server -> Client callbacks and subscriptions
 
 Note that Cap'n Web is a bidirectional object capability protocol, meaning, among other things, you can pass a function over RPC, in the params or results of another function. This actually passes the function "by reference": the receiving end actually receives an RPC stub, which can be used to call back over RPC to the original function. This, of course, causes the function to become async, even if the original was synchronous.
