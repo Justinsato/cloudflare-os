@@ -195,7 +195,8 @@ export function HomePageContent({ prompt }: HomeSearch) {
         <MeshBackground />
       </div>
       )}
-      <div className="flex w-full max-w-2xl flex-col items-stretch gap-8">
+      {/* The header gets the wider band so a display-size headline holds one line. */}
+      <div className="flex w-full max-w-4xl flex-col items-stretch gap-8">
         {/* Hero */}
         <header className="text-center">
           {home?.eyebrow && (
