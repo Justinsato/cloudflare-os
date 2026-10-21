@@ -2270,6 +2270,7 @@ export default function GadgetEditor() {
         description={<>This removes <span className="font-medium text-kumo-default">{metadata.title}</span>. You can&apos;t undo this.</>}
         isDeleting={isDeleting}
         onOpenChange={setDeleteDialogOpen}
+        requireTypedConfirmation="delete workspace"
         onConfirm={handleDeleteConfirm}
       />
 
