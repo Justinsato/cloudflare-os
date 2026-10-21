@@ -4,7 +4,8 @@
  * color) and fading out above the composer. A dual-brand theme gives each line its own color.
  */
 export default function HomeBackdrop() {
-  const fade = 'linear-gradient(to bottom, #000 0%, #000 35%, transparent 90%)'
+  // Gone by ~270px, above the entity row, so the lines never run behind its boxes.
+  const fade = 'linear-gradient(to bottom, #000 0%, #000 30%, transparent 64%)'
   const line = (n: 1 | 2) => `var(--home-line-${n}, var(--text-color-kumo-brand))`
   return (
     <div
