@@ -7,6 +7,7 @@ import MeshBackground from "../components/MeshBackground";
 import HomeBackdrop from "../components/AppShell/HomeBackdrop";
 import HomeTaskSuggestions from "../components/AppShell/HomeTaskSuggestions";
 import HomePriorities from "../components/AppShell/HomePriorities";
+import HomeEntities from "../components/AppShell/HomeEntities";
 import { siteConfig } from "../siteConfig";
 import { useSiteTheme } from "../useWorkspaceTheme";
 import { useAuthenticatedApi } from "../AuthContext";
@@ -219,7 +220,16 @@ export function HomePageContent({ prompt }: HomeSearch) {
             </p>
           )}
         </header>
+      </div>
 
+      {/* The deployment's entities, joined to the headline by connector lines. */}
+      {home?.entities && home.entities.length > 0 && (
+        <div className="mt-2 w-full max-w-4xl">
+          <HomeEntities entities={home.entities} />
+        </div>
+      )}
+
+      <div className="mt-8 flex w-full max-w-2xl flex-col items-stretch gap-8">
         {/* Composer */}
         <ChatComposer
           createCapsuleGatekeeper={createCapsuleGatekeeper}
