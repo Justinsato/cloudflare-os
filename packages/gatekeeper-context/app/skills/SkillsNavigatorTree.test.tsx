@@ -13,7 +13,7 @@ import type {
 import { ContextApiProvider } from "../bridge";
 import type { NavigatorDeleteTarget } from "./DeleteNavigatorNodeDialog";
 import type { SkillNavigatorCollection } from "./skillNavigatorModel";
-import { SkillsNavigatorTree } from "./SkillsNavigatorTree";
+import { documentTitle, SkillsNavigatorTree } from "./SkillsNavigatorTree";
 import type { UploadSkillsTarget } from "./UploadSkillsDialog";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -332,5 +332,16 @@ describe("SkillsNavigatorTree", () => {
     expect(container?.querySelector('[aria-label="Rename skill"]')).toBeNull();
     act(() => vi.advanceTimersByTime(0));
     expect(container?.querySelector('[aria-label="Rename skill"]')).not.toBeNull();
+  });
+});
+
+describe("documentTitle", () => {
+  it("turns a file name into a title and keeps acronyms upper case", () => {
+    expect(documentTitle("writing-and-model-standards.md")).toBe("Writing and model standards");
+    expect(documentTitle("ai-reflections-standard.md")).toBe("AI reflections standard");
+    expect(documentTitle("lfiq-app-style-playbook.md")).toBe("LFIQ app style playbook");
+    expect(documentTitle("05-back9-trades.md")).toBe("05 back9 trades");
+    expect(documentTitle("noi_bridge_ib_format.md")).toBe("NOI bridge IB format");
+    expect(documentTitle("README.md")).toBe("README");
   });
 });
