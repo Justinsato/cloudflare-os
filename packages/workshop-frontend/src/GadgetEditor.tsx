@@ -83,6 +83,7 @@ import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER, MENU_POSITIONER_STYLE } from
 import { isImeComposing } from './keyboardEvent'
 import { formatUsageCost } from './formatUsageCost'
 import { siteConfig } from './siteConfig'
+import { useWorkspaceTheme } from './useWorkspaceTheme'
 
 const NO_GADGETS: ReadonlySet<WorkpieceId> = new Set()
 
@@ -860,6 +861,7 @@ export default function GadgetEditor() {
   const chatRailOnly = splitLayout && chatCollapsed
   const paneChatWidth = chatRailOnly ? COLLAPSED_CHAT_WIDTH : chatWidth
   const assistantName = id === undefined ? undefined : siteConfig().workspaces?.[id]?.assistantName
+  useWorkspaceTheme(id)
   const showOutputRail = layoutModeReady && hasAnyApps && !showFullEditor
   const paneShowsActivity = showingActivity || activityClosing
   useEffect(() => {

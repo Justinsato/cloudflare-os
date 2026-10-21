@@ -21,10 +21,11 @@ import {
   SidebarWorkspacesProvider,
   SidebarWorkspacesTools,
   SidebarWorkspacesLists,
+  SidebarSection,
 } from './SidebarWorkspaces'
 import SidebarUtilityStrip from './SidebarUtilityStrip'
 import { siteConfig } from '../../siteConfig'
-import { useState } from 'react'
+import { useState, type ReactNode } from 'react'
 import { inNativeApp, returnToInstalls } from '../../features/native-app/nativeApp'
 
 const BUILD_OPEN_KEY = 'sidebar:build-open'
@@ -53,7 +54,12 @@ export default function Sidebar({
   // and is connected / enabled for everyone). Disabled or not-yet-connected ones aren't returned, so
   // they simply don't appear. The set is fully dynamic — no gatekeeper is hardcoded.
   const gatekeeperApps = useGatekeeperApps()
-  const buildSection = siteConfig().nav?.buildSection === true
+  const nav = siteConfig().nav
+  const buildSection = nav?.buildSection === true
+  // A site config can move Build down among the workspace groups, and list Outputs inside a group.
+  const buildAfterGroup = buildSection && !collapsed
+    && nav?.groups.some((g) => g.label === nav.buildAfterGroup) ? nav?.buildAfterGroup : undefined
+  const outputsGroup = collapsed ? undefined : nav?.groups.find((g) => g.links?.includes('outputs'))?.label
   // Remembered per browser; starts closed so the rail leads with the work.
   const [buildOpen, setBuildOpen] = useState(() => {
     try { return localStorage.getItem(BUILD_OPEN_KEY) === '1' } catch { return false }
@@ -124,6 +130,25 @@ export default function Sidebar({
             />
     </>
   )
+
+  const outputsItem = (
+    <SidebarItem
+      to="/outputs"
+      label="Outputs"
+      icon={<Stack size={14} weight="regular" />}
+      collapsed={collapsed}
+    />
+  )
+  const groupLead: Record<string, ReactNode> = outputsGroup ? { [outputsGroup]: outputsItem } : {}
+  const afterGroup: Record<string, ReactNode> = buildAfterGroup
+    ? {
+        [buildAfterGroup]: (
+          <SidebarSection label="Build" open={buildOpen} onToggle={toggleBuild}>
+            <div className="flex flex-col gap-0.5">{buildItems}</div>
+          </SidebarSection>
+        ),
+      }
+    : {}
 
   return (
     <aside
@@ -201,15 +226,10 @@ export default function Sidebar({
               icon={<House size={14} weight="regular" />}
               collapsed={collapsed}
             />
-            <SidebarItem
-              to="/outputs"
-              label="Outputs"
-              icon={<Stack size={14} weight="regular" />}
-              collapsed={collapsed}
-            />
+            {!outputsGroup && outputsItem}
             {/* With a site-config Build section, the builder surfaces fold into one collapsible group
                 so the rail leads with Home, Outputs and the workspaces people work in. */}
-            {buildSection && !collapsed ? (
+            {buildAfterGroup ? null : buildSection && !collapsed ? (
               <>
                 <button
                   type="button"
@@ -236,7 +256,7 @@ export default function Sidebar({
         {/* Scrolling middle: only the Favorites / Recent workspaces / Recent blueprints lists.
             min-h-0 lets flex children compute scroll height correctly. */}
         <div className="sidebar-scroll mt-1 min-h-0 flex-1 overflow-y-auto">
-          <SidebarWorkspacesLists collapsed={collapsed} />
+          <SidebarWorkspacesLists collapsed={collapsed} groupLead={groupLead} afterGroup={afterGroup} />
         </div>
       </SidebarWorkspacesProvider>
 

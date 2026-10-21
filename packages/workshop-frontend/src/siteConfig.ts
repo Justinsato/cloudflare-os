@@ -29,19 +29,29 @@ export interface HomeConfig {
 export interface NavGroup {
   label: string
   workspaceIds: string[]
+  /** App pages listed at the top of the group, by key. Only "outputs" is known; it then leaves the primary nav. */
+  links?: NavLink[]
 }
+
+/** App pages a nav group can list alongside its workspaces. */
+export const NAV_LINKS = ['outputs'] as const
+export type NavLink = (typeof NAV_LINKS)[number]
 
 /** Sidebar layout. */
 export interface NavConfig {
   groups: NavGroup[]
   /** Put Workspaces, Blueprints, gatekeeper apps and Explore in one collapsible "Build" section. */
   buildSection?: boolean
+  /** Place the Build section under this group's label instead of in the primary nav. */
+  buildAfterGroup?: string
 }
 
 /** Per-workspace settings, keyed by workspace id. */
 export interface WorkspaceSiteConfig {
   /** Who answers in this workspace's chat, named in the composer ("Caddie"). */
   assistantName?: string
+  /** Brand theme for the workspace chrome, set as `data-workspace-theme` on <html> while it is open. */
+  theme?: string
 }
 
 /** Everything a deployment can set. */
@@ -90,11 +100,22 @@ function parseNav(v: unknown): NavConfig | undefined {
       if (!g || typeof g !== 'object') return []
       const r = g as Record<string, unknown>
       if (!isString(r.label) || !Array.isArray(r.workspaceIds)) return []
-      return [{ label: r.label, workspaceIds: r.workspaceIds.filter(isString) }]
+      const links = Array.isArray(r.links)
+        ? r.links.filter((l): l is NavLink => (NAV_LINKS as readonly unknown[]).includes(l))
+        : []
+      return [{
+        label: r.label,
+        workspaceIds: r.workspaceIds.filter(isString),
+        ...(links.length > 0 ? { links } : {}),
+      }]
     })
     : []
   if (groups.length === 0 && n.buildSection !== true) return undefined
-  return { groups, buildSection: n.buildSection === true }
+  return {
+    groups,
+    buildSection: n.buildSection === true,
+    ...(isString(n.buildAfterGroup) ? { buildAfterGroup: n.buildAfterGroup } : {}),
+  }
 }
 
 function parseWorkspaces(v: unknown): Record<string, WorkspaceSiteConfig> | undefined {
@@ -102,8 +123,12 @@ function parseWorkspaces(v: unknown): Record<string, WorkspaceSiteConfig> | unde
   const out: Record<string, WorkspaceSiteConfig> = {}
   for (const [id, entry] of Object.entries(v as Record<string, unknown>)) {
     if (!entry || typeof entry !== 'object') continue
-    const name = (entry as Record<string, unknown>).assistantName
-    if (isString(name)) out[id] = { assistantName: name }
+    const e = entry as Record<string, unknown>
+    const settings: WorkspaceSiteConfig = {
+      ...(isString(e.assistantName) ? { assistantName: e.assistantName } : {}),
+      ...(isString(e.theme) && /^[a-z0-9-]+$/.test(e.theme) ? { theme: e.theme } : {}),
+    }
+    if (Object.keys(settings).length > 0) out[id] = settings
   }
   return Object.keys(out).length > 0 ? out : undefined
 }
