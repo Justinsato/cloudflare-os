@@ -1545,10 +1545,11 @@ class OverseerImpl implements AgentHooks {
         ([, edge]) => !edge.pending || edge.pending.chatId === forChatId);
   }
 
-  // Bind `target` (a gatekeeper) into gadget `gadgetId`'s env under `name`. If `chatId` is
-  // given, the edge is provisional to that chat (see BindingRecord.pending); the caller is
-  // responsible for getting the addition recorded in the chat log so the pending edge gets
-  // sequence-stamped (see addChatMessages()).
+  // Bind `target` (a gatekeeper, or another gadget) into gadget `gadgetId`'s env under `name`.
+  // A gadget target appears in env as that gadget's RPC stub, as the agent's executeCode sees it.
+  // If `chatId` is given, the edge is provisional to that chat (see BindingRecord.pending); the
+  // caller is responsible for getting the addition recorded in the chat log so the pending edge
+  // gets sequence-stamped (see addChatMessages()).
   bindWorkpiece(gadgetId: WorkpieceId, name: string, target: WorkpieceId,
                 chatId?: number): void {
     validateBindingName(name);
@@ -1573,10 +1574,23 @@ class OverseerImpl implements AgentHooks {
       if (record?.type === "worktree") {
         throw new Error(`Worktrees cannot be bound into gadgets.`);
       }
-      if (record) {
-        throw new Error(`Gadget-to-gadget bindings are not supported yet.`);
+      if (!record) {
+        throw new Error(`No such gatekeeper: ${target}`);
       }
-      throw new Error(`No such gatekeeper: ${target}`);
+      if (target === gadgetId) {
+        throw new Error(`A gadget cannot bind itself; use env.GADGET.`);
+      }
+      // A gadget still provisional to some chat is that chat's proposal: only that chat may
+      // wire it in, and only provisionally (so the edge goes when the proposal does).
+      if (record.pending && record.pending.chatId !== chatId) {
+        throw new Error(`No such gatekeeper: ${target}`);
+      }
+      // A gadget target brings no connection into anyone's scope (its own bindings are
+      // already counted), so there is nothing to restart for.
+      gadget.bindings[name] = {target, ...(chatId !== undefined ? {pending: {chatId}} : {})};
+      this.storage.gadgets.put(gadget);
+      this.bumpVersion([gadgetId]);
+      return;
     }
     // A permanent edge can put an account-requiring connection into every "use" collaborator's
     // verification scope, since the gadget UI they drive can now invoke it. Snapshot the scope
@@ -1671,6 +1685,16 @@ class OverseerImpl implements AgentHooks {
         .filter(meta => this.proposedChangeWorkpieceIds(meta.id, meta).includes(id));
     let facetName = this.gadgetFacetName(id);
     this.storage.gadgets.delete(id);  // notifies workpiece subscribers
+    // Sever other gadgets' binding edges to it, as removeGatekeeper does for connections.
+    for (let other of Array.from(this.storage.gadgets.list())) {
+      if (other.type !== "gadget") continue;
+      let names = Object.entries(other.bindings)
+          .filter(([, edge]) => edge.target === id).map(([name]) => name);
+      if (names.length === 0) continue;
+      for (let name of names) delete other.bindings[name];
+      this.storage.gadgets.put(other);
+      this.bumpVersion([other.id]);
+    }
     let order = this.storage.gadgetOrder.get();
     if (order.includes(id)) this.storage.gadgetOrder.put(order.filter(o => o !== id));
     this.#runningChatIds.delete(id);
@@ -2912,6 +2936,14 @@ class OverseerImpl implements AgentHooks {
         }));
   }
 
+  // Display title for a binding edge's target: a connection's resource title, or a bound
+  // gadget's own title.
+  bindingTargetTitle(target: WorkpieceId): string {
+    let gadget = this.storage.gadgets.get(target);
+    if (gadget?.type === "gadget") return gadget.title;
+    return this.storage.gatekeepers.get(target)?.resourceTitle || "(title unavailable)";
+  }
+
   makeBindingLoopback(target: BindingLoopbackTarget, caller: GatekeeperCaller) {
     let props: GatekeeperLoopbackProps = {
       overseerId: this.ctx.id.toString(),
@@ -2939,7 +2971,9 @@ class OverseerImpl implements AgentHooks {
     // name was reserved keeps seeing its own binding.
     env[WORKSPACE_BINDING_NAME] = this.makeBindingLoopback({type: "workspace"}, caller);
     for (let [name, edge] of this.visibleBindings(gadget, forChatId)) {
-      env[name] = this.makeBindingLoopback({type: "gatekeeper", id: edge.target}, caller);
+      let type = this.storage.gadgets.get(edge.target)?.type === "gadget"
+          ? "gadget" as const : "gatekeeper" as const;
+      env[name] = this.makeBindingLoopback({type, id: edge.target}, caller);
     }
     return env;
   }
@@ -5023,8 +5057,12 @@ class OverseerImpl implements AgentHooks {
   //
   // Since facet stubs currently can't be sent over RPC, the stub is wrapped in a Proxy to make it
   // look like an RpcTarget instead.
-  async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number, joinAs?: SessionKind)
-      : Promise<RpcStub<any>> {
+  //
+  // `nested` marks a call made from inside a gadget call that already holds a slot (a binding
+  // loopback from one gadget into another, or into itself via env.GADGET). Those skip the slot
+  // queue: queueing them would have the outer calls wait on slots only they can free.
+  async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number, joinAs?: SessionKind,
+                       nested?: boolean): Promise<RpcStub<any>> {
     let facet = await this.getGadgetFacetFetcher(gadgetId, chatId);
     let leaveSession = joinAs ? this.joinSession(joinAs) : undefined;
 
@@ -5061,7 +5099,7 @@ class OverseerImpl implements AgentHooks {
         //   possibly a runtime bug which needs investigation.
         // TODO: Fix exception reporting it tail workers so we can remove this hack.
         return async (...args: any[]) => {
-          let release = await self.#acquireGadgetCallSlot();
+          let release = nested ? () => {} : await self.#acquireGadgetCallSlot();
           let result: Promise<any>;
           try {
             result = Promise.resolve(Reflect.apply(method, target, args));
@@ -5517,7 +5555,7 @@ class OverseerImpl implements AgentHooks {
           this.#getOrCreateCapturedActions(caller.chatId).accessedGadget = true;
         }
         let chatId = "chatId" in caller ? caller.chatId : undefined;
-        return this.getGadgetFacet(target.id, chatId);
+        return this.getGadgetFacet(target.id, chatId, undefined, caller.from === "gadget");
       }
 
       case "gatekeeper":
@@ -7554,7 +7592,7 @@ class OverseerImpl implements AgentHooks {
       output: gadget.output,
       bindings: this.visibleBindings(gadget, forChatId).map(([name, edge]) => ({
         name,
-        title: this.storage.gatekeepers.get(edge.target)?.resourceTitle || "(title unavailable)",
+        title: this.bindingTargetTitle(edge.target),
         target: edge.target,
       })),
     }));
@@ -12975,7 +13013,7 @@ class GadgetClientImpl extends RpcTarget implements GadgetClient {
       return {
         name,
         target: edge.target,
-        resourceTitle: gatekeeper?.resourceTitle || "(title unavailable)",
+        resourceTitle: this.impl.bindingTargetTitle(edge.target),
         vendorId: gatekeeper?.creationSpec?.type === "gatekeeper" ||
                 gatekeeper?.creationSpec?.type === "ambient"
             ? gatekeeper.creationSpec.vendorId
