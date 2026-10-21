@@ -207,7 +207,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
           )}
           <h1
             className={home
-              ? "text-[40px] leading-[1.08] tracking-[-0.01em] text-kumo-strong sm:text-[56px]"
+              ? "text-[40px] font-normal leading-[1.12] tracking-[-0.015em] text-kumo-strong sm:text-[60px] sm:leading-[68px]"
               : "text-3xl font-semibold tracking-tight leading-tight text-kumo-default sm:text-4xl"}
           >
             {home?.title ?? "What are we working on?"}
