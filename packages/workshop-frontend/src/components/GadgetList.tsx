@@ -408,6 +408,7 @@ export default function GadgetList({ showHeader = true }: { showHeader?: boolean
         }
         confirmLabel={deleteTarget?.owner ? 'Remove' : 'Delete'}
         confirmingLabel={deleteTarget?.owner ? 'Removing...' : 'Deleting...'}
+        requireTypedConfirmation={deleteTarget?.owner ? undefined : 'delete workspace'}
         onConfirm={handleDeleteConfirm}
       />
 

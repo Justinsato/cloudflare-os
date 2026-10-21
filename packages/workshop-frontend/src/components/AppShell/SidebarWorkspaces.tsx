@@ -236,6 +236,7 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
         }
         confirmLabel={deleteTarget?.owner ? 'Remove' : 'Delete'}
         confirmingLabel={deleteTarget?.owner ? 'Removing...' : 'Deleting...'}
+        requireTypedConfirmation={deleteTarget?.owner ? undefined : 'delete workspace'}
         onConfirm={handleDeleteConfirm}
       />
 
