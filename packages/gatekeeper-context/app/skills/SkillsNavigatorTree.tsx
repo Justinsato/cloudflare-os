@@ -74,12 +74,20 @@ const contentsLabel = (nodes: readonly SkillNavigatorNode[]) => {
   return `${plural(skills, "skill")} · ${plural(documents, "document")}`;
 };
 
-/** "writing-and-model-standards.md" -> "Writing and model standards"; README stays as is. */
+// Words a file name lower-cases that read wrong in a title.
+const ACRONYMS = new Set([
+  "ai", "api", "ap", "ar", "crm", "css", "dscr", "gl", "html", "ib", "irr", "kpi", "lfi", "lfiq",
+  "llm", "ltv", "mcp", "noi", "pdf", "sf", "sql", "ui", "ux",
+]);
+
+/** "ai-reflections-standard.md" -> "AI reflections standard"; README stays as is. */
 export const documentTitle = (fileName: string) => {
   const stem = fileName.replace(/\.(md|markdown|txt)$/i, "");
   if (stem === stem.toUpperCase()) return stem;
-  const words = stem.replace(/[-_]+/g, " ").trim();
-  return words.charAt(0).toUpperCase() + words.slice(1);
+  const words = stem.split(/[-_\s]+/).filter(Boolean)
+    .map((word) => ACRONYMS.has(word.toLowerCase()) ? word.toUpperCase() : word);
+  const title = words.join(" ");
+  return title.charAt(0).toUpperCase() + title.slice(1);
 };
 
 const relativeUpdatedAt = (date: Date, now: number) => {
@@ -279,9 +287,10 @@ export const SkillsNavigatorTree = ({
             {metadata.visibility === "public" ? "Organization" : "Private"}
           </span>
           {metadata.content.source === "git" && (
-            <span className="flex items-center gap-1">
+            <span className="flex items-center gap-1" title="Git managed">
               <GitBranch aria-hidden size={12} />
-              Git managed
+              {/* The icon alone on narrow panes, so the counts and update time keep their room. */}
+              <span className="sr-only md:not-sr-only">Git managed</span>
             </span>
           )}
           {updatedAt && (
