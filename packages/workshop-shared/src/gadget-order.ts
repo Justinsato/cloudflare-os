@@ -1,16 +1,31 @@
 import type { WorkpieceId } from "./api.js";
 
 /**
- * Sort `items` by a workspace's saved gadget order (see GadgetMetadata.gadgetOrder). Items named
- * in `order` come first, in that order; items it doesn't name (gadgets created after the order was
+ * Whether a gadget title names the workspace's Workspace Home: the bare title "Workspace Home", or a
+ * convention title ("Category · Action · Contents · Cadence") whose Contents is "Workspace Home".
+ */
+export function isWorkspaceHomeTitle(title: string | undefined): boolean {
+  if (title === undefined) return false;
+  let parts = title.split(" · ").map(part => part.trim());
+  let contents = parts.length >= 4 ? parts.slice(2, -1).join(" · ") : title.trim();
+  return contents === "Workspace Home";
+}
+
+/**
+ * Sort `items` by a workspace's saved gadget order (see GadgetMetadata.gadgetOrder). The Workspace
+ * Home (see isWorkspaceHomeTitle) always comes first, ahead of the saved order. Then items named
+ * in `order` come, in that order; items it doesn't name (gadgets created after the order was
  * last saved, drafts) follow in id order, which is creation order. Ids in `order` with no matching
  * item (deleted gadgets) are ignored. Returns a new array.
  */
-export function sortByGadgetOrder<T extends {id: WorkpieceId}>(
+export function sortByGadgetOrder<T extends {id: WorkpieceId, title?: string}>(
     items: Iterable<T>, order: readonly WorkpieceId[] | undefined): T[] {
   let rank = new Map<WorkpieceId, number>();
   order?.forEach((id, index) => { if (!rank.has(id)) rank.set(id, index); });
   return [...items].toSorted((a, b) => {
+    let ha = isWorkspaceHomeTitle(a.title);
+    let hb = isWorkspaceHomeTitle(b.title);
+    if (ha !== hb) return ha ? -1 : 1;
     let ra = rank.get(a.id);
     let rb = rank.get(b.id);
     if (ra !== undefined && rb !== undefined) return ra - rb;

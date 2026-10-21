@@ -1,16 +1,18 @@
 import type { WorkpieceSummary } from '@gadgets/workshop-shared/api'
+import { isWorkspaceHomeTitle } from '@gadgets/workshop-shared/gadget-order'
 
 // Gadget titles follow the convention "Category · Action · Contents · Cadence", for example
 // "Report · Test · Tidewater Covenants · Monthly". Navigation leads with the Contents, the part that
 // tells two reports apart, and shows the rest as secondary text. Titles that don't follow the
-// convention are shown whole under "Other".
+// convention are shown whole under "Other". The Workspace Home gets a group of its own, "Home",
+// listed above every category.
 
 export const GADGET_CATEGORIES = ['Dashboard', 'Report', 'Tracker', 'Analysis', 'Agent', 'Feed'] as const
 export type GadgetCategory = (typeof GADGET_CATEGORIES)[number]
 
-/** A navigation group: one of the convention's categories, or "Other" for everything else. */
-export type GadgetGroupName = GadgetCategory | 'Other'
-export const GADGET_GROUP_ORDER: readonly GadgetGroupName[] = [...GADGET_CATEGORIES, 'Other']
+/** A navigation group: "Home", one of the convention's categories, or "Other" for everything else. */
+export type GadgetGroupName = 'Home' | GadgetCategory | 'Other'
+export const GADGET_GROUP_ORDER: readonly GadgetGroupName[] = ['Home', ...GADGET_CATEGORIES, 'Other']
 
 export interface ParsedGadgetTitle {
   category?: GadgetCategory
@@ -45,9 +47,13 @@ export interface WorkpieceGroup<T extends WorkpieceSummary = WorkpieceSummary> {
   items: T[]
 }
 
-/** The group a workpiece is listed under. Worktrees and non-convention titles go under "Other". */
+/**
+ * The group a workpiece is listed under. The Workspace Home goes under "Home"; worktrees and
+ * non-convention titles go under "Other".
+ */
 export function groupOfWorkpiece(workpiece: WorkpieceSummary): GadgetGroupName {
   if (workpiece.type !== 'gadget') return 'Other'
+  if (isWorkspaceHomeTitle(workpiece.title)) return 'Home'
   return parseGadgetTitle(workpiece.title).category ?? 'Other'
 }
 
