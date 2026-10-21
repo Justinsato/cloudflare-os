@@ -84,6 +84,7 @@ import { isImeComposing } from './keyboardEvent'
 import { formatUsageCost } from './formatUsageCost'
 import { siteConfig } from './siteConfig'
 import { useWorkspaceTheme } from './useWorkspaceTheme'
+import { notifyWorkspacesChanged } from './workspaceListBus'
 
 const NO_GADGETS: ReadonlySet<WorkpieceId> = new Set()
 
@@ -862,6 +863,11 @@ export default function GadgetEditor() {
   const paneChatWidth = chatRailOnly ? COLLAPSED_CHAT_WIDTH : chatWidth
   const assistantName = id === undefined ? undefined : siteConfig().workspaces?.[id]?.assistantName
   useWorkspaceTheme(id)
+  // The sidebar lists workspaces by title; tell it when this one's title is known or changes.
+  const liveTitle = metadata?.title
+  useEffect(() => {
+    if (liveTitle !== undefined) notifyWorkspacesChanged()
+  }, [liveTitle])
   const showOutputRail = layoutModeReady && hasAnyApps && !showFullEditor
   const paneShowsActivity = showingActivity || activityClosing
   useEffect(() => {
@@ -1421,6 +1427,7 @@ export default function GadgetEditor() {
     try {
       await overseer.stub.setTitle(titleInput.trim())
       updateTitle(titleInput.trim())
+      notifyWorkspacesChanged()
       setIsEditingTitle(false)
     } catch { toasts.add({ title: 'Failed to update title', variant: 'error' }) }
     finally { titleSaveInFlight.current = false }
