@@ -62,3 +62,14 @@ describe('groupWorkpieces', () => {
     expect(matchesWorkpieceQuery(items[1], '  ')).toBe(true)
   })
 })
+
+describe('Workspace Home group', () => {
+  it('lists the Workspace Home in its own group above every category', () => {
+    const groups = groupWorkpieces([
+      { id: 1, type: 'gadget', title: 'Dashboard · Monitor · A · Daily' },
+      { id: 2, type: 'gadget', title: 'Dashboard · Review · Workspace Home · Live' },
+    ])
+    expect(groups.map(g => g.name)).toEqual(['Home', 'Dashboard'])
+    expect(groups[0].items.map(w => w.id)).toEqual([2])
+  })
+})

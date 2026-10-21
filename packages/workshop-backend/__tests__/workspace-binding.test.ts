@@ -62,14 +62,15 @@ describe("env.WORKSPACE", () => {
       { id: b, title: "Beta", self: false },
     ]);
 
-    // The same session sees renames, reorders, additions and removals without any resync.
+    // The same session sees renames, reorders, additions and removals without any resync. The
+    // Workspace Home stays first whatever the saved order says.
     impl.setGadgetTitle(a, "Alpha · Renamed");
     await client.setGadgetOrder([b, a, home]);
     let c = await createGadget(impl, client, "Gamma");
     await impl.removeWorkpiece(b);
     expect(workspace.listGadgets()).toEqual([
-      { id: a, title: "Alpha · Renamed", self: false },
       { id: home, title: "Workspace Home", self: true },
+      { id: a, title: "Alpha · Renamed", self: false },
       { id: c, title: "Gamma", self: false },
     ]);
   }));

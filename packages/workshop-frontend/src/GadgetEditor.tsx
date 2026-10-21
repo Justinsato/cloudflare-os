@@ -18,7 +18,7 @@ import {
   type Icon,
 } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget } from 'capnweb'
-import { sortByGadgetOrder } from '@gadgets/workshop-shared/gadget-order'
+import { isWorkspaceHomeTitle, sortByGadgetOrder } from '@gadgets/workshop-shared/gadget-order'
 import { applyGadgetMove, type GadgetMove } from './gadgetReorder'
 import GadgetSwitcher from './GadgetSwitcher'
 import WorkspaceSwitcher from './WorkspaceSwitcher'
@@ -698,12 +698,15 @@ export default function GadgetEditor() {
       .map(w => w.id)
   ), [allGadgets, effectiveSelectedChatId])
 
-  // The selected workpiece: explicit URL state wins, followed by the one open in this session
-  // (only accepted apps are persisted), then the workspace default and the first visible one.
+  // The selected workpiece: explicit URL state wins. Entering the workspace without one opens its
+  // Workspace Home; failing that, the one open in this session (only accepted apps are persisted),
+  // then the workspace default and the first visible one.
   const selectedWorkpieceId = useMemo(() => {
     if (urlWorkpieceId !== null && visibleWorkpieces.some(g => g.id === urlWorkpieceId)) {
       return urlWorkpieceId
     }
+    const home = visibleGadgets.find(g => g.chatId === undefined && isWorkspaceHomeTitle(g.title))
+    if (home) return home.id
     const storedId = workspaceView?.mode === 'app' ? workspaceView.appId : undefined
     if (storedId !== undefined && visibleWorkpieces.some(g => g.id === storedId)) {
       return storedId

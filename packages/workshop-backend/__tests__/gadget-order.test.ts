@@ -3,7 +3,7 @@ import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
 import type { AiChatAuthorInfo, GadgetMetadata, Overseer } from "@gadgets/workshop-shared/api";
 import {
-  moveGadget, normalizeGadgetOrder, sortByGadgetOrder,
+  isWorkspaceHomeTitle, moveGadget, normalizeGadgetOrder, sortByGadgetOrder,
 } from "@gadgets/workshop-shared/gadget-order";
 import type { OverseerDurableObject } from "../src/overseer.js";
 import { openFakeOverseer } from "./fixtures";
@@ -139,5 +139,25 @@ describe("gadget order helpers", () => {
     expect(moveGadget([1, 2, 3, 4], 3, 0)).toEqual([4, 1, 2, 3]);
     expect(moveGadget([1, 2, 3], 1, 10)).toEqual([1, 3, 2]);
     expect(moveGadget([1, 2, 3], 5, 0)).toEqual([1, 2, 3]);
+  });
+});
+
+describe("Workspace Home placement", () => {
+  it("recognizes the Workspace Home by its Contents", () => {
+    expect(isWorkspaceHomeTitle("Dashboard · Review · Workspace Home · Live")).toBe(true);
+    expect(isWorkspaceHomeTitle("Workspace Home")).toBe(true);
+    expect(isWorkspaceHomeTitle("Dashboard · Review · Workspace Home Stats · Live")).toBe(false);
+    expect(isWorkspaceHomeTitle("Report · Review · Units · Live")).toBe(false);
+    expect(isWorkspaceHomeTitle(undefined)).toBe(false);
+  });
+
+  it("sorts the Workspace Home first, ahead of the saved order", () => {
+    let items = [
+      { id: 1, title: "Report · Review · A · Live" },
+      { id: 2, title: "Report · Review · B · Live" },
+      { id: 9, title: "Dashboard · Review · Workspace Home · Live" },
+    ];
+    expect(sortByGadgetOrder(items, [2, 1, 9]).map(i => i.id)).toEqual([9, 2, 1]);
+    expect(sortByGadgetOrder(items, undefined).map(i => i.id)).toEqual([9, 1, 2]);
   });
 });
