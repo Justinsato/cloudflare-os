@@ -15,6 +15,7 @@ import {
   Pulse,
   SidebarSimple,
   ChatsCircle,
+  House,
   type Icon,
 } from '@phosphor-icons/react'
 import { RpcStub, RpcTarget } from 'capnweb'
@@ -701,12 +702,14 @@ export default function GadgetEditor() {
   // The selected workpiece: explicit URL state wins. Entering the workspace without one opens its
   // Workspace Home; failing that, the one open in this session (only accepted apps are persisted),
   // then the workspace default and the first visible one.
+  const homeGadgetId = useMemo(
+    () => visibleGadgets.find(g => g.chatId === undefined && isWorkspaceHomeTitle(g.title))?.id ?? null,
+    [visibleGadgets])
   const selectedWorkpieceId = useMemo(() => {
     if (urlWorkpieceId !== null && visibleWorkpieces.some(g => g.id === urlWorkpieceId)) {
       return urlWorkpieceId
     }
-    const home = visibleGadgets.find(g => g.chatId === undefined && isWorkspaceHomeTitle(g.title))
-    if (home) return home.id
+    if (homeGadgetId !== null) return homeGadgetId
     const storedId = workspaceView?.mode === 'app' ? workspaceView.appId : undefined
     if (storedId !== undefined && visibleWorkpieces.some(g => g.id === storedId)) {
       return storedId
@@ -716,7 +719,7 @@ export default function GadgetEditor() {
       return defaultId
     }
     return visibleWorkpieces.length > 0 ? visibleWorkpieces[0].id : null
-  }, [urlWorkpieceId, workspaceView, visibleWorkpieces, visibleGadgets, metadata?.defaultGadgetId])
+  }, [urlWorkpieceId, workspaceView, visibleWorkpieces, visibleGadgets, homeGadgetId, metadata?.defaultGadgetId])
 
   const selectedWorkpieceSummary = selectedWorkpieceId !== null
     ? visibleWorkpieces.find(g => g.id === selectedWorkpieceId)
@@ -2008,11 +2011,25 @@ export default function GadgetEditor() {
               ) : selectedWorkpieceSummary && (
                 // One switcher for every output: the selected one's name, opening a searchable
                 // list grouped by category (Cmd/Ctrl+K). Reorder lives in the Outputs rail.
-                <GadgetSwitcher
-                  workpieces={visibleWorkpieces}
-                  selectedId={selectedWorkpieceId}
-                  onSelect={handleSelectWorkpiece}
-                />
+                // The house beside it jumps back to the Workspace Home from any output.
+                <div className="flex min-w-0 items-center gap-1">
+                  {homeGadgetId !== null && (
+                    <WorkshopIconButton
+                      onClick={() => handleSelectWorkpiece(homeGadgetId)}
+                      disabled={selectedWorkpieceId === homeGadgetId}
+                      className="!h-7 !w-7"
+                      aria-label="Go to Workspace Home"
+                      title="Workspace Home"
+                    >
+                      <House size={15} weight={selectedWorkpieceId === homeGadgetId ? 'fill' : 'regular'} />
+                    </WorkshopIconButton>
+                  )}
+                  <GadgetSwitcher
+                    workpieces={visibleWorkpieces}
+                    selectedId={selectedWorkpieceId}
+                    onSelect={handleSelectWorkpiece}
+                  />
+                </div>
               )}
             </div>
 
