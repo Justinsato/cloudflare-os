@@ -254,4 +254,52 @@ describe("restarting a workspace whose loop counter is exhausted", () => {
     expect(restarts).toEqual([RESTART_REASON]);
     expect(logged(errors, "workspace.loop.limit.restart")).toHaveLength(1);
   }));
+
+  describe("restarting a facet whose loop counter is exhausted", () => {
+    // Records facet aborts instead of performing them.
+    function recordAborts(impl: any): string[] {
+      let aborted: string[] = [];
+      impl.ctx = Object.create(impl.ctx, {
+        facets: { value: { abort: (name: string) => { aborted.push(name); } } },
+      });
+      return aborted;
+    }
+
+    it("a refused session start restarts the connection's facet, once per cooldown",
+        () => withImpl(async (impl, restarts) => {
+      let errors = vi.spyOn(console, "error").mockImplementation(() => {});
+      let aborted = recordAborts(impl);
+      impl.getGatekeeperFacet = async () => { throw new Error(LOOP_LIMIT_MESSAGE); };
+      let start = (id: number) => impl.startGatekeeperSession({type: "gatekeeper", id}, {from: "gadget"});
+
+      await expect(start(6)).rejects.toThrow(/looped back/);
+      await expect(start(6)).rejects.toThrow(/looped back/);
+      await expect(start(9)).rejects.toThrow(/looped back/);
+      expect(aborted).toEqual(["gatekeeper6", "gatekeeper9"]);
+      expect(restarts).toEqual([]);  // the workspace itself keeps running
+      expect(logged(errors, "facet.loop.limit.restart")).toHaveLength(2);
+
+      vi.spyOn(Date, "now").mockReturnValue(impl.streamGeneration + MIN_AGE_MS + 60_000);
+      await expect(start(6)).rejects.toThrow(/looped back/);
+      expect(aborted).toEqual(["gatekeeper6", "gatekeeper9", "gatekeeper6"]);
+    }));
+
+    it("other refusals restart nothing", () => withImpl(async impl => {
+      let aborted = recordAborts(impl);
+      for (let message of [STAGE_LIMIT_MESSAGE, "Some other failure"]) {
+        impl.getGatekeeperFacet = async () => { throw new Error(message); };
+        await expect(impl.startGatekeeperSession({type: "gatekeeper", id: 6}, {from: "gadget"}))
+            .rejects.toThrow(message);
+      }
+      expect(aborted).toEqual([]);
+    }));
+
+    it("a gadget facet restarts by its own facet name", () => withImpl(async impl => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      let aborted = recordAborts(impl);
+      expect(impl.restartFacetIfLoopLimited(impl.gadgetFacetName(12), new Error(LOOP_LIMIT_MESSAGE)))
+          .toBe(true);
+      expect(aborted).toEqual([impl.gadgetFacetName(12)]);
+    }));
+  });
 });
