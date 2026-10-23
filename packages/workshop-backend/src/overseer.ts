@@ -481,6 +481,10 @@ const AGENT_KEEPALIVE_ALARM_MS = 60_000;
 // OverseerImpl.restartIfLoopLimited.
 const LOOP_LIMIT_RESTART_MIN_AGE_MS = 60_000;
 
+// The least time between two loop-limit restarts of the same facet. See
+// OverseerImpl.restartFacetIfLoopLimited.
+const FACET_LOOP_LIMIT_RESTART_COOLDOWN_MS = 60_000;
+
 // The error an accept throws when writing a workpiece's commit fails (most likely because
 // storage refused a file too large to hold, which the git store's error names), prefixed with
 // the workpiece as the user knows it. An accept writes its objects before it moves anything, so
@@ -5560,7 +5564,11 @@ class OverseerImpl implements AgentHooks {
 
       case "gatekeeper":
         return this.getGatekeeperFacet(target.id)
-            .then(facet => this.openGatekeeperSession(target.id, facet, caller));
+            .then(facet => this.openGatekeeperSession(target.id, facet, caller))
+            .catch(err => {
+              this.restartFacetIfLoopLimited(`gatekeeper${target.id}`, err);
+              throw err;
+            });
 
       case "worktree": {
         // The programmatic Worktree binding (worktree-session.ts). A worktree's uncommitted
@@ -6373,6 +6381,31 @@ class OverseerImpl implements AgentHooks {
       event: "workspace.loop.limit.restart", error: err,
     });
     this.scheduleAccessRestart("Gadget restarted because its subrequest depth was exhausted.");
+  }
+
+  // When each facet was last restarted by restartFacetIfLoopLimited, by facet name.
+  #facetLoopLimitRestarts = new Map<string, number>();
+
+  // Restart one facet (a gadget's or a connection's) if `err` is the runtime's loop-limit
+  // rejection of a call through it. A facet's outgoing channels hold their loop counter just as
+  // this object's do (see restartIfLoopLimited), and every gadget bound to a connection reads
+  // through that one connection facet, so a spent counter there fails every such read in the
+  // workspace until the facet is replaced. Restarting just the facet clears that without
+  // disrupting the rest of the workspace; the call that reported it still fails, and the next one
+  // starts a fresh instance. Whoever can provoke the error can at worst restart the facet it was
+  // already calling, so this is rate-limited per facet rather than restricted by caller.
+  restartFacetIfLoopLimited(facetName: string, err: unknown): boolean {
+    if (!isLoopLimitError(err)) return false;
+    let now = Date.now();
+    let last = this.#facetLoopLimitRestarts.get(facetName);
+    if (last !== undefined && now - last < FACET_LOOP_LIMIT_RESTART_COOLDOWN_MS) return false;
+    this.#facetLoopLimitRestarts.set(facetName, now);
+    this.logger.error("restarting a facet to clear an exhausted subrequest depth", {
+      event: "facet.loop.limit.restart", operation: facetName, error: err,
+    });
+    this.ctx.facets.abort(facetName,
+        new Error("Restarted because its subrequest depth was exhausted."));
+    return true;
   }
 
   // Wraps a user DO stub for reset telemetry (see wrapDoStubForTelemetry) and so that a loop-limit
@@ -10830,7 +10863,17 @@ export class GadgetTailLoopback extends WorkerEntrypoint<Cloudflare.Env, GadgetT
     let ns = this.ctx.exports.OverseerDurableObject;
     let stub: DurableObjectStub<OverseerDurableObject> =
         ns.get(ns.idFromString(this.ctx.props.overseerId));
-    await stub.deliverGadgetLogs(this.ctx.props.chatId ?? null, logs);
+    try {
+      await stub.deliverGadgetLogs(this.ctx.props.chatId ?? null, logs);
+    } catch (err) {
+      // A tail runs one hop below the gadget call it reports on, so a call that came in near the
+      // loop limit leaves its logs no room to reach the overseer. Those logs are lost either way;
+      // say so once as a warning instead of failing the tail as an error.
+      if (!isLoopLimitError(err)) throw err;
+      logger.warn("gadget logs dropped at the loop limit", {
+        event: "gadget.logs.loop.limit", gadgetId: String(this.ctx.props.gadgetId), size: logs.length,
+      });
+    }
   }
 
   /**
