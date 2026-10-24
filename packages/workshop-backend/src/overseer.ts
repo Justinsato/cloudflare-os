@@ -79,7 +79,9 @@ import { AutoApprovalDrainer, autoApprovalRule } from "./auto-approval";
 import { collectSlashCommands, invokeSlashCommand } from "./slash-commands";
 import { createWorkshopLogger, obsContext } from "./observability";
 import { traceAgentTurn, traceToolApproval } from "./agent-tracing";
-import { isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
+import {
+  containsLoopLimitMessage, isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry,
+} from "./do-retry";
 import type { ChatGatewayRpcTarget, SubmitExternalMessageResult } from "@gadgets/workshop-shared/external-message-gateway";
 import type { CreationApproval, GadgetExportFormat } from "@gadgets/workshop-shared/api";
 import { normalizeGadgetOrder } from "@gadgets/workshop-shared/gadget-order";
@@ -484,6 +486,12 @@ const LOOP_LIMIT_RESTART_MIN_AGE_MS = 60_000;
 // The least time between two loop-limit restarts of the same facet. See
 // OverseerImpl.restartFacetIfLoopLimited.
 const FACET_LOOP_LIMIT_RESTART_COOLDOWN_MS = 60_000;
+
+// Stands in for the runtime's loop-limit error when a gadget returns that refusal as data instead
+// of rejecting (see restartGadgetIfLoopLimited); isLoopLimitError accepts it.
+const LOOP_LIMIT_IN_RESULT =
+    "Subrequest depth limit exceeded. This request looped back into the Workers runtime " +
+    "(reported in a gadget's result).";
 
 // The error an accept throws when writing a workpiece's commit fails (most likely because
 // storage refused a file too large to hold, which the git store's error names), prefixed with
@@ -4882,6 +4890,8 @@ class OverseerImpl implements AgentHooks {
       codeVersion += `.${chatId}.${sequence}`;
     }
 
+    let reload = this.#gadgetReloads.get(gadgetId) ?? 0;
+    if (reload > 0) codeVersion += `.r${reload}`;
     return this.env.LOADER.get(`${this.ctx.id}.${codeVersion}.${gadgetId}`, async () => {
       // The snapshot meta above serves the as-of-`sequence` doc build; this re-read only keeps
       // the old fail-on-deleted-chat behavior (don't cache a load for a chat deleted mid-load).
@@ -5112,6 +5122,7 @@ class OverseerImpl implements AgentHooks {
             throw err;
           }
           result.then(release, release);
+          self.observeGadgetCall(gadgetId, result);
           return result.catch((err: any) => {
             let msg = err;
             if (err instanceof Error) {
@@ -6406,6 +6417,31 @@ class OverseerImpl implements AgentHooks {
     this.ctx.facets.abort(facetName,
         new Error("Restarted because its subrequest depth was exhausted."));
     return true;
+  }
+
+  // How many times each gadget's loaded worker has been replaced by restartGadgetIfLoopLimited.
+  // Part of the worker loader's cache key, so a replacement loads afresh. In memory only: a
+  // restart of this object starts every gadget afresh anyway.
+  #gadgetReloads = new Map<WorkpieceId, number>();
+
+  // Restart a gadget whose call was refused at the loop limit, or which returned that refusal as
+  // data. A gadget's instance -- and the loaded worker its bindings come from -- can hold a spent
+  // counter from whatever started it, and then every read it makes is refused while other gadgets
+  // reading the same connection are fine (seen 2026-10-23/24 on Back9 Trades). Replacing both
+  // clears it: the facet restarts and the next call loads the worker again, from that call.
+  restartGadgetIfLoopLimited(gadgetId: WorkpieceId, err: unknown): void {
+    if (!this.restartFacetIfLoopLimited(this.gadgetFacetName(gadgetId), err)) return;
+    this.#gadgetReloads.set(gadgetId, (this.#gadgetReloads.get(gadgetId) ?? 0) + 1);
+  }
+
+  // Watches one client call into a gadget for the loop limit, either as its rejection or carried
+  // in its result (see containsLoopLimitMessage), and restarts the gadget if so.
+  observeGadgetCall(gadgetId: WorkpieceId, result: Promise<unknown>): void {
+    result.then(value => {
+      if (containsLoopLimitMessage(value)) {
+        this.restartGadgetIfLoopLimited(gadgetId, new Error(LOOP_LIMIT_IN_RESULT));
+      }
+    }, err => this.restartGadgetIfLoopLimited(gadgetId, err));
   }
 
   // Wraps a user DO stub for reset telemetry (see wrapDoStubForTelemetry) and so that a loop-limit

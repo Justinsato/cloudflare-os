@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
-  isDoResetError, isLoopLimitError, retryOnDoReset, wrapDoStubForTelemetry,
+  containsLoopLimitMessage, isDoResetError, isLoopLimitError, retryOnDoReset,
+  wrapDoStubForTelemetry,
 } from "../src/do-retry";
 import { createWorkshopLogger } from "../src/observability";
 
@@ -275,3 +276,35 @@ describe("retryOnDoReset", () => {
     expect(recoveredEvents(info)).toBe(0);
   });
 });
+
+describe("containsLoopLimitMessage", () => {
+  const LOOP = "Subrequest depth limit exceeded. This request looped back into the Workers runtime " +
+      "too many times.";
+
+  it("finds the message anywhere in plain data, including quoted inside other text", () => {
+    expect(containsLoopLimitMessage(LOOP)).toBe(true);
+    expect(containsLoopLimitMessage({data: null, healthError: LOOP})).toBe(true);
+    expect(containsLoopLimitMessage({rows: [{note: "ok"}, {err: `Refresh failed (${LOOP})`}]}))
+        .toBe(true);
+  });
+
+  it("ignores other text, the different stages counter, and non-plain objects", () => {
+    expect(containsLoopLimitMessage({error: "Engine is down."})).toBe(false);
+    expect(containsLoopLimitMessage(
+        "Subrequest depth limit exceeded. This request passed through too many Workers stages"))
+        .toBe(false);
+    let fn = Object.assign(() => LOOP, {message: LOOP});
+    expect(containsLoopLimitMessage({stub: fn, date: new Date()})).toBe(false);
+    expect(containsLoopLimitMessage(new Error(LOOP))).toBe(false);
+  });
+
+  it("stops after its node budget", () => {
+    let wide = {items: Array.from({length: 100}, () => "x"), late: LOOP};
+    expect(containsLoopLimitMessage(wide, 10)).toBe(true);  // late is visited first (stack order)
+    let deep = {items: [...Array.from({length: 100}, () => "x"), LOOP]};
+    expect(containsLoopLimitMessage(deep, 10)).toBe(true);
+    let buried = {late: LOOP, items: Array.from({length: 100}, () => "x")};
+    expect(containsLoopLimitMessage(buried, 10)).toBe(false);
+  });
+});
+
