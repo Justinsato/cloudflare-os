@@ -10174,10 +10174,12 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    * `notifyClosed` should be invoked when the return `Overseer` stub is disposed, which is used
    * by AuthenticatedApiImpl.#openGadgetInternal() to detect Durable Object disconnects.
    */
-  // Brick recovery for an accidentally deleted workspace (2026-10-21). deleteSelf() wipes this
-  // object's SQLite storage; point-in-time recovery rolls it back. Reachable only from a Worker in
-  // this account that binds the Overseer namespace: no client RPC exposes these methods.
-  // Temporary: remove once the restore is done.
+  /**
+   * Brick recovery for an accidentally deleted workspace (2026-10-21). deleteSelf() wipes this
+   * object's SQLite storage; point-in-time recovery rolls it back. Reachable only from a Worker in
+   * this account that binds the Overseer namespace: no client RPC exposes these methods.
+   * Temporary: remove once the restore is done.
+   */
   async adminRestoreToTime(timestampMs: number): Promise<string> {
     let ts = Number(timestampMs);
     if (!Number.isFinite(ts) || ts > Date.now() || ts < Date.now() - 29 * 24 * 60 * 60 * 1000) {
@@ -10193,7 +10195,7 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     return bookmark;
   }
 
-  // After a restore: put the workspace back in its owner's list. Returns what storage now holds.
+  /** After a restore: put the workspace back in its owner's list. Returns what storage now holds. */
   async adminReregister(): Promise<{ownerId: string, title: string}> {
     let ownerId = this.impl.storage.ownerId.get();
     if (!ownerId) throw new Error("This workspace has no owner in storage; the restore did not take.");

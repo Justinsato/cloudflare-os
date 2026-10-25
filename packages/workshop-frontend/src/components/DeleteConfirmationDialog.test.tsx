@@ -24,7 +24,7 @@ async function type(value: string) {
 
 describe('DeleteConfirmationDialog', () => {
   it('keeps Delete disabled until the phrase is typed', async () => {
-    const onConfirm = vi.fn()
+    const onConfirm = vi.fn<() => void>()
     await view.render(
       <DeleteConfirmationDialog open title="Delete workspace" description="Delete it?"
         requireTypedConfirmation="delete workspace" onOpenChange={() => {}} onConfirm={onConfirm} />,
