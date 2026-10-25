@@ -59,6 +59,19 @@ const SCHEDULER_ICON = {
     ),
 };
 
+// The connection screens draw `logo` and `avatar` with <img>, where `currentColor` has no
+// color to inherit and the glyph renders black (invisible on the dark theme). This tile uses
+// explicit fills; the sidebar keeps SCHEDULER_ICON, which it draws as a CSS mask.
+const SCHEDULER_LOGO = {
+  url:
+    "data:image/svg+xml," +
+    encodeURIComponent(
+      decodeURIComponent(SCHEDULER_ICON.url.slice("data:image/svg+xml,".length))
+        .replace(" fill='currentColor'>", "><rect width='256' height='256' rx='48' fill='#173454'/><g fill='#ffffff' transform='translate(40 40) scale(0.6875)'>")
+        .replace("</svg>", "</g></svg>"),
+    ),
+};
+
 type ScheduleHookTarget = RpcTarget & ScheduledTaskHook;
 type ScheduleInitiator = Fetcher<HookInitiator<ScheduleHookTarget>>;
 
@@ -408,7 +421,7 @@ type ScheduleAccountProps = { accountId: string };
 export function describeScheduleAccount(): AccountDescription {
   return {
     displayName: "Scheduled Tasks",
-    avatar: SCHEDULER_ICON,
+    avatar: SCHEDULER_LOGO,
     singleton: { tsType: "ScheduleSession" },
     providesUi: { title: "Scheduled", icon: SCHEDULER_ICON },
   };
@@ -501,7 +514,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
     return {
       displayName: "Scheduled Tasks",
       url: "https://workers.cloudflare.com/",
-      logo: SCHEDULER_ICON,
+      logo: SCHEDULER_LOGO,
       tagline: "Run workspace tasks on a schedule",
       description: "Register recurring and one-shot workspace tasks.",
       autoProvisionsAccount: true,

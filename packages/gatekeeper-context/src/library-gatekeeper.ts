@@ -37,6 +37,19 @@ const LIBRARY_ICON = {
     "</svg>"),
 };
 
+// The connection screens draw `logo` and `avatar` with <img>, where `currentColor` has no
+// color to inherit and the glyph renders black (invisible on the dark theme). This tile uses
+// explicit fills; the sidebar keeps LIBRARY_ICON, which it draws as a CSS mask.
+const LIBRARY_LOGO = {
+  url:
+    "data:image/svg+xml," +
+    encodeURIComponent(
+      decodeURIComponent(LIBRARY_ICON.url.slice("data:image/svg+xml,".length))
+        .replace(" fill='currentColor'>", "><rect width='256' height='256' rx='48' fill='#173454'/><g fill='#ffffff' transform='translate(40 40) scale(0.6875)'>")
+        .replace("</svg>", "</g></svg>"),
+    ),
+};
+
 const COLLECTION_SKILL_FANOUT = 8;
 
 class ContextSlashCommandProvider extends NativeRpcTarget
@@ -132,7 +145,7 @@ export class ContextAccount
   async describe(): Promise<AccountDescription> {
     return {
       displayName: "Skills",
-      avatar: LIBRARY_ICON,
+      avatar: LIBRARY_LOGO,
       singleton: { tsType: "ContextLibrary" },
       providesUi: { title: "Skills", icon: LIBRARY_ICON },
     };
@@ -376,7 +389,7 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env, Gatekeepe
     return {
       displayName: "Skills",
       url: "https://workers.cloudflare.com/",
-      logo: LIBRARY_ICON,
+      logo: LIBRARY_LOGO,
       tagline: "Reusable instructions and workflows for agents",
       description:
         "Skills provide agents with reusable instructions, workflows, and supporting resources. " +
