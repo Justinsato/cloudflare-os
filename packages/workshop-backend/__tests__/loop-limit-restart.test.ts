@@ -294,6 +294,37 @@ describe("restarting a workspace whose loop counter is exhausted", () => {
       expect(aborted).toEqual([]);
     }));
 
+    it("a gadget call that returns the refusal as data restarts the gadget with a fresh worker",
+        () => withImpl(async impl => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      let aborted = recordAborts(impl);
+
+      impl.observeGadgetCall(37, Promise.resolve({data: [1, 2], error: null}));
+      await settle();
+      expect(aborted).toEqual([]);
+
+      impl.observeGadgetCall(37, Promise.resolve({data: null, healthError: LOOP_LIMIT_MESSAGE}));
+      await settle();
+      expect(aborted).toEqual([impl.gadgetFacetName(37)]);
+
+      // The next load of that gadget's worker uses a new cache key, so it is loaded afresh.
+      let keys: string[] = [];
+      impl.env = {...impl.env, LOADER: {get: (key: string) => { keys.push(key); return {}; }}};
+      impl.loadGadgetWorker(37);
+      impl.loadGadgetWorker(38);
+      expect(keys[0]).toMatch(/\.r1\.37$/);
+      expect(keys[1]).not.toMatch(/\.r\d+\./);
+    }));
+
+    it("a gadget call rejected at the loop limit restarts the gadget", () => withImpl(async impl => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
+      let aborted = recordAborts(impl);
+      impl.observeGadgetCall(37, Promise.reject(new Error("Engine is down.")));
+      impl.observeGadgetCall(38, Promise.reject(new Error(LOOP_LIMIT_MESSAGE)));
+      await settle();
+      expect(aborted).toEqual([impl.gadgetFacetName(38)]);
+    }));
+
     it("a gadget facet restarts by its own facet name", () => withImpl(async impl => {
       vi.spyOn(console, "error").mockImplementation(() => {});
       let aborted = recordAborts(impl);

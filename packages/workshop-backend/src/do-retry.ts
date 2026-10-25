@@ -46,6 +46,31 @@ export function isLoopLimitError(e: unknown): boolean {
       "Subrequest depth limit exceeded. This request looped back into the Workers runtime");
 }
 
+const LOOP_LIMIT_TEXT =
+    "Subrequest depth limit exceeded. This request looped back into the Workers runtime";
+
+/**
+ * True if `value` -- a call's result -- carries the runtime's loop-limit message in any string
+ * within it. Gadgets commonly catch a refused read and return its message as data (a "stale"
+ * banner), so a refusal inside a gadget shows up only this way. Walks plain objects and arrays
+ * only (never functions, which is what RPC stubs look like, so no RPC is triggered), and stops
+ * after `budget` nodes so a large result costs a bounded scan.
+ */
+export function containsLoopLimitMessage(value: unknown, budget = 5_000): boolean {
+  let stack: unknown[] = [value];
+  while (stack.length > 0 && budget-- > 0) {
+    let v = stack.pop();
+    if (typeof v === "string") {
+      if (v.includes(LOOP_LIMIT_TEXT)) return true;
+    } else if (Array.isArray(v)) {
+      for (let item of v) stack.push(item);
+    } else if (v !== null && typeof v === "object" && Object.getPrototypeOf(v) === Object.prototype) {
+      for (let item of Object.values(v)) stack.push(item);
+    }
+  }
+  return false;
+}
+
 /** Wraps a DO stub so every method call observes DO-reset rejections for telemetry
  * (`user_do.reset.surfaced`, with the method name as the operation) and rethrows them
  * unchanged. Otherwise transparent. Pass the caller's logger so the log attributes the reset
