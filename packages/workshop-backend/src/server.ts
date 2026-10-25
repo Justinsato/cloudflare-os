@@ -24,7 +24,7 @@ import { GatekeeperConnectCallbackImpl, normalizeUsername, UserDurableObject, CL
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
 import { ExternalMessageGateway } from "./external-message-gateway";
-import { RpcStub as NativeRpcStub } from "cloudflare:workers";
+import { RpcStub as NativeRpcStub, WorkerEntrypoint } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
 import { handleClientErrorRequest } from "./client-errors.js";
 import { accessSessionEmail, parseAccessServiceTokenEmails, verifyCfAccessJwt } from "./access.js";
@@ -69,6 +69,7 @@ export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
 
 // Re-export service-binding entrypoint for external channel integrations.
 export { ExternalMessageGateway };
+// OperatorApi (below) is exported where it is declared.
 
 // Declare optional environment variables here since they may be omitted from wrangler.jsonc.
 type Env = Cloudflare.Env & {
@@ -871,6 +872,35 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
     delete metadata.screenshot;
 
     return buildBlueprintArchiveStream(metadata, r2Object.body, r2Object.size);
+  }
+}
+
+/** The user an OperatorApi binding acts as, set in the binding's props by the deployer. */
+type OperatorApiProps = { email?: string };
+
+/**
+ * Service-binding entrypoint for another Worker of the same deployment (Brick: the MCP server) to
+ * use the authenticated API as one configured user, with no browser, cookie or Access service
+ * token. The user is the binding's `props.email`, which only the deployment's own Worker config
+ * can set, so the trust boundary is the account's deploy rights, the same as for every other
+ * service binding. The user signs in exactly as through Cloudflare Access: an existing account,
+ * or a new one only where sign-ups are enabled.
+ */
+export class OperatorApi extends WorkerEntrypoint<Env, OperatorApiProps> {
+  async authenticate(): Promise<AuthenticatedApi> {
+    const email = this.ctx.props.email;
+    if (!email) throw new Error("OperatorApi binding has no props.email.");
+    const users = this.ctx.exports.UserDurableObject;
+    const userId = users.idFromName(email);
+    const signupsEnabled = (await readAdminConfig(this.env)).signupsEnabled;
+    await users.get(userId).authenticateFromCfAccess(email, signupsEnabled);
+    recordAnalytics(this.ctx, this.env, {
+      event_name: "user_authenticated",
+      user_id: userId.toString(),
+      source: "operator_binding",
+    });
+    // A binding has no session to abort: each call through it is its own request.
+    return new AuthenticatedApiImpl(this.ctx, this.env, userId, () => {});
   }
 }
 
