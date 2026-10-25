@@ -24,7 +24,7 @@ import { GatekeeperConnectCallbackImpl, normalizeUsername, UserDurableObject, CL
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
 import { ExternalMessageGateway } from "./external-message-gateway";
-import { RpcStub as NativeRpcStub, WorkerEntrypoint } from "cloudflare:workers";
+import { RpcStub as NativeRpcStub, RpcTarget as NativeRpcTarget, WorkerEntrypoint } from "cloudflare:workers";
 import { recordAnalytics } from "./analytics";
 import { handleClientErrorRequest } from "./client-errors.js";
 import { accessSessionEmail, parseAccessServiceTokenEmails, verifyCfAccessJwt } from "./access.js";
@@ -875,6 +875,51 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
   }
 }
 
+/**
+ * What OperatorApi hands back: the read-only account calls of AuthenticatedApi plus openGadget().
+ *
+ * Not AuthenticatedApiImpl itself. That class is @validateRpc()-decorated, and the decorator wraps a
+ * returned stub (openGadget's workspace) in a JS Proxy that Cap'n Web forwards over the browser's
+ * WebSocket but Workers RPC cannot: the caller gets an object with no methods. This target is
+ * undecorated and returns the workspace Durable Object's own native stub.
+ */
+class OperatorSession extends NativeRpcTarget {
+  #api: AuthenticatedApiImpl;
+  #overseers: DurableObjectNamespace<OverseerDurableObject>;
+  #userId: DurableObjectId;
+
+  constructor(ctx: ExecutionContext, env: Env, userId: DurableObjectId) {
+    super();
+    this.#api = new AuthenticatedApiImpl(ctx, env, userId, () => {});
+    this.#overseers = ctx.exports.OverseerDurableObject;
+    this.#userId = userId;
+  }
+
+  listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
+    return this.#api.listGadgets();
+  }
+
+  getPreferredModel(): Promise<string | null> {
+    return this.#api.getPreferredModel();
+  }
+
+  /** Opens a workspace as this user, exactly as AuthenticatedApi.openGadget() does. */
+  async openGadget(id: string): Promise<NativeRpcStub<Overseer>> {
+    let overseerId;
+    try {
+      overseerId = this.#overseers.idFromString(id);
+    } catch {
+      throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotFound);
+    }
+    // The browser path passes a callback that aborts its WebSocket when the DO drops; a binding
+    // call has no session to abort, so the callback only satisfies open().
+    const notifyClosed = () => {};
+    (notifyClosed as any)[Symbol.dispose] = () => {};
+    return await this.#overseers.get(overseerId).open(
+        this.#userId.toString(), this.#userId.name!, notifyClosed);
+  }
+}
+
 /** The user an OperatorApi binding acts as, set in the binding's props by the deployer. */
 type OperatorApiProps = { email?: string };
 
@@ -887,7 +932,7 @@ type OperatorApiProps = { email?: string };
  * or a new one only where sign-ups are enabled.
  */
 export class OperatorApi extends WorkerEntrypoint<Env, OperatorApiProps> {
-  async authenticate(): Promise<AuthenticatedApi> {
+  async authenticate(): Promise<OperatorSession> {
     const email = this.ctx.props.email;
     if (!email) throw new Error("OperatorApi binding has no props.email.");
     const users = this.ctx.exports.UserDurableObject;
@@ -899,8 +944,7 @@ export class OperatorApi extends WorkerEntrypoint<Env, OperatorApiProps> {
       user_id: userId.toString(),
       source: "operator_binding",
     });
-    // A binding has no session to abort: each call through it is its own request.
-    return new AuthenticatedApiImpl(this.ctx, this.env, userId, () => {});
+    return new OperatorSession(this.ctx, this.env, userId);
   }
 }
 
