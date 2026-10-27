@@ -68,4 +68,25 @@ describe('parseSiteConfig', () => {
     })
     expect(config.workspaces).toEqual({ b9: { theme: 'back9' } })
   })
+
+  it('reads the sketch backdrop and app links on entities, dropping non-https links', () => {
+    const config = parseSiteConfig({
+      home: {
+        title: 'T',
+        priorities: [],
+        backdrop: 'sketch',
+        entities: [
+          { label: 'Watch', href: 'https://watch.lfiq.app/', description: 'City records' },
+          { label: 'Bad', href: 'javascript:alert(1)' },
+        ],
+      },
+    })
+    expect(config.home?.backdrop).toBe('sketch')
+    expect(config.home?.entities).toEqual([
+      { label: 'Watch', href: 'https://watch.lfiq.app/', description: 'City records' },
+      { label: 'Bad' },
+    ])
+    expect(parseSiteConfig({ home: { title: 'T', priorities: [], backdrop: 'mesh' } }).home?.backdrop)
+      .toBeUndefined()
+  })
 })

@@ -20,6 +20,10 @@ export interface HomePriority {
 export interface HomeEntity {
   label: string
   workspaceId?: string
+  /** External app the box opens instead of a workspace, as an https URL. */
+  href?: string
+  /** One line under the label, such as the app's tagline. */
+  description?: string
   /** Site theme whose accent marks the entity's box ("back9"). */
   theme?: string
 }
@@ -35,7 +39,12 @@ export interface HomeConfig {
   entities?: HomeEntity[]
   /** Brand theme for Home, set as `data-workspace-theme` on <html> while Home is open. */
   theme?: string
+  /** Home backdrop: "chevrons" (default) or "sketch", the Hub's San Francisco landmark etch. */
+  backdrop?: HomeBackdropName
 }
+
+export const HOME_BACKDROPS = ['chevrons', 'sketch'] as const
+export type HomeBackdropName = (typeof HOME_BACKDROPS)[number]
 
 /** A labelled sidebar group of workspaces, listed in the given order. */
 export interface NavGroup {
@@ -74,6 +83,14 @@ export interface SiteConfig {
 }
 
 const isString = (v: unknown): v is string => typeof v === 'string' && v.trim() !== ''
+const isHttpsUrl = (v: unknown): v is string => {
+  if (!isString(v)) return false
+  try {
+    return new URL(v).protocol === 'https:'
+  } catch {
+    return false
+  }
+}
 const isThemeName = (v: unknown): v is string => typeof v === 'string' && /^[a-z0-9-]+$/.test(v)
 
 function parsePriority(v: unknown): HomePriority | null {
@@ -96,6 +113,8 @@ function parseEntity(v: unknown): HomeEntity | null {
   return {
     label: e.label,
     ...(isString(e.workspaceId) ? { workspaceId: e.workspaceId } : {}),
+    ...(isHttpsUrl(e.href) ? { href: e.href } : {}),
+    ...(isString(e.description) ? { description: e.description } : {}),
     ...(isThemeName(e.theme) ? { theme: e.theme } : {}),
   }
 }
@@ -117,6 +136,9 @@ function parseHome(v: unknown): HomeConfig | undefined {
       ? { entities: h.entities.map(parseEntity).filter((e): e is HomeEntity => e !== null) }
       : {}),
     ...(isThemeName(h.theme) ? { theme: h.theme } : {}),
+    ...((HOME_BACKDROPS as readonly unknown[]).includes(h.backdrop)
+      ? { backdrop: h.backdrop as HomeBackdropName }
+      : {}),
   }
 }
 

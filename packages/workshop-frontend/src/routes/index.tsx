@@ -5,6 +5,7 @@ import { useKumoToastManager } from "@cloudflare/kumo";
 import { ChatComposer } from "../features/chat/composer/ChatComposer";
 import MeshBackground from "../components/MeshBackground";
 import HomeBackdrop from "../components/AppShell/HomeBackdrop";
+import HomeSketchBackdrop from "../components/AppShell/HomeSketchBackdrop";
 import HomeTaskSuggestions from "../components/AppShell/HomeTaskSuggestions";
 import HomePriorities from "../components/AppShell/HomePriorities";
 import HomeEntities from "../components/AppShell/HomeEntities";
@@ -178,7 +179,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
       {home ? (
         // A deployment with its own Home gets its own backdrop: a faint brand-tinted field and a
         // hairline grid that fade out above the composer, in place of the upstream hex mesh.
-        <HomeBackdrop />
+        home.backdrop === "sketch" ? <HomeSketchBackdrop /> : <HomeBackdrop />
       ) : (
       /* The brand hex mesh, restored and de-warmed for the new system: a gentle perspective hex
           grid receding upward. Masked to fade out before the composer so it stays a quiet backdrop. */
@@ -263,7 +264,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
 
       {/* The deployment's strategic priorities get a wider band than the composer column, so six
           read as a 3 x 2 grid of cards on desktop. */}
-      {home && (
+      {home && home.priorities.length > 0 && (
         <div className="mt-12 w-full max-w-4xl">
           <HomePriorities label={home.prioritiesLabel ?? "Priorities"} priorities={home.priorities} />
         </div>
