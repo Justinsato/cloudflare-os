@@ -196,8 +196,13 @@ export function HomePageContent({ prompt }: HomeSearch) {
         <MeshBackground />
       </div>
       )}
-      {/* The header gets the wider band so a display-size headline holds one line. */}
-      <div className="flex w-full max-w-4xl flex-col items-stretch gap-8">
+      {/* The header gets the wider band so a display-size headline holds one line. Over the sketch
+          backdrop it also reserves the drawing's height, so the entity row starts below the etch. */}
+      <div
+        className={`flex w-full max-w-4xl flex-col items-stretch gap-8${
+          home?.backdrop === "sketch" ? " min-h-[420px]" : ""
+        }`}
+      >
         {/* Hero */}
         <header className="text-center">
           {home?.eyebrow && (
