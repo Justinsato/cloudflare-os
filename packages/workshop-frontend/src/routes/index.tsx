@@ -172,6 +172,8 @@ export function HomePageContent({ prompt }: HomeSearch) {
     [ensureProvisionalGadget],
   );
 
+  const sketch = home?.backdrop === "sketch";
+
   return (
     // Flat enterprise treatment: no mesh, no watermark hexagon, no prompt-glow. The AppShell's
     // <main> already supplies a faint dotted grid as the page background.
@@ -200,13 +202,18 @@ export function HomePageContent({ prompt }: HomeSearch) {
           backdrop it also reserves the drawing's height, so the entity row starts below the etch. */}
       <div
         className={`flex w-full max-w-4xl flex-col items-stretch gap-8${
-          home?.backdrop === "sketch" ? " min-h-[420px]" : ""
+          sketch ? " min-h-[420px]" : ""
         }`}
       >
         {/* Hero */}
         <header className="text-center">
           {home?.eyebrow && (
-            <p className="mb-4 text-[11px] font-semibold uppercase tracking-[0.18em] text-kumo-brand">
+            // Over the sketch backdrop the eyebrow sits at the top edge of the page, clear of the drawing.
+            <p
+              className={`text-[11px] font-semibold uppercase tracking-[0.18em] text-kumo-brand ${
+                sketch ? "absolute inset-x-0 top-6 text-center" : "mb-4"
+              }`}
+            >
               {home.eyebrow}
               <span aria-hidden="true" className="mx-2 text-kumo-inactive">·</span>
               <span className="font-medium normal-case tracking-normal text-kumo-subtle">{todayLabel()}</span>
@@ -219,7 +226,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
           >
             {home?.title ?? "What are we working on?"}
           </h1>
-          {(home ? home.subtitle : true) && (
+          {(home ? home.subtitle && !sketch : true) && (
             <p className="mx-auto mt-3 max-w-md text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
               {home
                 ? home.subtitle
@@ -234,6 +241,13 @@ export function HomePageContent({ prompt }: HomeSearch) {
         <div className="mt-2 w-full max-w-4xl">
           <HomeEntities entities={home.entities} />
         </div>
+      )}
+
+      {/* Over the sketch backdrop the subtitle moves below the entity row, out of the drawing. */}
+      {sketch && home?.subtitle && (
+        <p className="mx-auto mt-6 max-w-md text-center text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
+          {home.subtitle}
+        </p>
       )}
 
       <div className="mt-8 flex w-full max-w-2xl flex-col items-stretch gap-8">
