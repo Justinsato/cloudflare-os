@@ -52,6 +52,14 @@ export interface NavGroup {
   workspaceIds: string[]
   /** App pages listed at the top of the group, by key. Only "outputs" is known; it then leaves the primary nav. */
   links?: NavLink[]
+  /** External apps listed after the group's workspaces, each opened in a new tab. */
+  apps?: NavApp[]
+}
+
+/** An external app a nav group lists as a row, by label and https URL. */
+export interface NavApp {
+  label: string
+  href: string
 }
 
 /** App pages a nav group can list alongside its workspaces. */
@@ -65,6 +73,8 @@ export interface NavConfig {
   buildSection?: boolean
   /** Place the Build section under this group's label instead of in the primary nav. */
   buildAfterGroup?: string
+  /** Sidebar titles for gatekeeper apps, keyed by the title the gatekeeper gives ("Skills"). */
+  appTitles?: Record<string, string>
 }
 
 /** Per-workspace settings, keyed by workspace id. */
@@ -149,22 +159,34 @@ function parseNav(v: unknown): NavConfig | undefined {
     ? n.groups.flatMap((g): NavGroup[] => {
       if (!g || typeof g !== 'object') return []
       const r = g as Record<string, unknown>
-      if (!isString(r.label) || !Array.isArray(r.workspaceIds)) return []
+      if (!isString(r.label) || (!Array.isArray(r.workspaceIds) && !Array.isArray(r.apps))) return []
+      const apps = Array.isArray(r.apps)
+        ? r.apps.flatMap((a): NavApp[] => {
+          if (!a || typeof a !== 'object') return []
+          const e = a as Record<string, unknown>
+          return isString(e.label) && isHttpsUrl(e.href) ? [{ label: e.label, href: e.href }] : []
+        })
+        : []
       const links = Array.isArray(r.links)
         ? r.links.filter((l): l is NavLink => (NAV_LINKS as readonly unknown[]).includes(l))
         : []
       return [{
         label: r.label,
-        workspaceIds: r.workspaceIds.filter(isString),
+        workspaceIds: Array.isArray(r.workspaceIds) ? r.workspaceIds.filter(isString) : [],
         ...(links.length > 0 ? { links } : {}),
+        ...(apps.length > 0 ? { apps } : {}),
       }]
     })
     : []
+  const appTitles = n.appTitles && typeof n.appTitles === 'object' && !Array.isArray(n.appTitles)
+    ? Object.fromEntries(Object.entries(n.appTitles).filter((e): e is [string, string] => isString(e[1])))
+    : undefined
   if (groups.length === 0 && n.buildSection !== true) return undefined
   return {
     groups,
     buildSection: n.buildSection === true,
     ...(isString(n.buildAfterGroup) ? { buildAfterGroup: n.buildAfterGroup } : {}),
+    ...(appTitles ? { appTitles } : {}),
   }
 }
 

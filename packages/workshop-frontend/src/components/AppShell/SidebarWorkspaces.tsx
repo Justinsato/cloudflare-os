@@ -310,11 +310,14 @@ export function SidebarWorkspacesTools({ collapsed = false }: { collapsed?: bool
 export function SidebarWorkspacesLists({
   collapsed = false,
   groupLead,
+  groupTail,
   afterGroup,
 }: {
   collapsed?: boolean
   /** Rows listed at the top of a deployment group (app pages such as Outputs), keyed by group label. */
   groupLead?: Record<string, ReactNode>
+  /** Rows listed after a deployment group's workspaces (external apps), keyed by group label. */
+  groupTail?: Record<string, ReactNode>
   /** Sections rendered right after a deployment group (the Build section), keyed by group label. */
   afterGroup?: Record<string, ReactNode>
 }) {
@@ -370,7 +373,8 @@ export function SidebarWorkspacesLists({
       {/* Deployment groups, in configured order. */}
       {groups.map((group) => (
         <Fragment key={group.label}>
-        {group.items.length === 0 && (search || (!gadgetsLoading && !groupLead?.[group.label])) ? null : (
+        {group.items.length === 0 && (search || (!gadgetsLoading && !groupLead?.[group.label]
+          && !groupTail?.[group.label])) ? null : (
         <SidebarSection
           label={group.label}
           open={!closedGroups.has(group.label)}
@@ -395,6 +399,7 @@ export function SidebarWorkspacesLists({
                   onDelete={onDelete}
                 />
               ))}
+              {!search && groupTail?.[group.label]}
             </div>
           )}
         </SidebarSection>

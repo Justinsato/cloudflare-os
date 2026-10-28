@@ -1,6 +1,7 @@
 import { Link } from '@tanstack/react-router'
 import {
   ArrowLeft,
+  ArrowUpRight,
   Blueprint,
   CaretDown,
   BookOpen,
@@ -24,7 +25,8 @@ import {
   SidebarSection,
 } from './SidebarWorkspaces'
 import SidebarUtilityStrip from './SidebarUtilityStrip'
-import { siteConfig } from '../../siteConfig'
+import { siteConfig, type NavApp } from '../../siteConfig'
+import { workspaceMonogram } from '../../workspaceMonogram'
 import { useState, type ReactNode } from 'react'
 import { inNativeApp, returnToInstalls } from '../../features/native-app/nativeApp'
 
@@ -94,7 +96,7 @@ export default function Sidebar({
                 key={app.id}
                 to="/gatekeepers/$appId"
                 params={{ appId: app.id }}
-                label={app.title}
+                label={nav?.appTitles?.[app.title] ?? app.title}
                 icon={
                   maskUrl ? (
                     // Render the (monochrome) app icon as a CSS mask filled with the row's current
@@ -140,6 +142,13 @@ export default function Sidebar({
     />
   )
   const groupLead: Record<string, ReactNode> = outputsGroup ? { [outputsGroup]: outputsItem } : {}
+  // External apps a group lists (Pursue, Parcel, …) follow its workspaces.
+  const groupTail: Record<string, ReactNode> = collapsed ? {} : Object.fromEntries(
+    (nav?.groups ?? []).filter((g) => g.apps?.length).map((g) => [
+      g.label,
+      g.apps!.map((app) => <SidebarAppRow key={app.href} app={app} />),
+    ]),
+  )
   const afterGroup: Record<string, ReactNode> = buildAfterGroup
     ? {
         [buildAfterGroup]: (
@@ -256,7 +265,12 @@ export default function Sidebar({
         {/* Scrolling middle: only the Favorites / Recent workspaces / Recent blueprints lists.
             min-h-0 lets flex children compute scroll height correctly. */}
         <div className="sidebar-scroll mt-1 min-h-0 flex-1 overflow-y-auto">
-          <SidebarWorkspacesLists collapsed={collapsed} groupLead={groupLead} afterGroup={afterGroup} />
+          <SidebarWorkspacesLists
+            collapsed={collapsed}
+            groupLead={groupLead}
+            groupTail={groupTail}
+            afterGroup={afterGroup}
+          />
         </div>
       </SidebarWorkspacesProvider>
 
@@ -276,5 +290,26 @@ export default function Sidebar({
         </button>
       )}
     </aside>
+  )
+}
+
+/** An external app in a nav group: the workspace row's look, opening the app in a new tab. */
+function SidebarAppRow({ app }: { app: NavApp }) {
+  return (
+    <a
+      href={app.href}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="group flex h-8 items-center gap-2 rounded-lg pl-1.5 pr-2 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-default transition-colors hover:bg-kumo-tint"
+    >
+      <div
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-kumo-fill text-[10px] font-medium text-kumo-subtle"
+        aria-hidden="true"
+      >
+        {workspaceMonogram(app.label)}
+      </div>
+      <span className="min-w-0 flex-1 truncate">{app.label}</span>
+      <ArrowUpRight size={12} className="shrink-0 text-kumo-inactive opacity-0 transition-opacity group-hover:opacity-100" />
+    </a>
   )
 }
