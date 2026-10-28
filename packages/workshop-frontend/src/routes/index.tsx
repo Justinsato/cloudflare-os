@@ -212,15 +212,20 @@ export function HomePageContent({ prompt }: HomeSearch) {
       >
         {/* Hero */}
         <header className="text-center">
-          {home?.eyebrow && (
+          {home && (
             // Over the sketch backdrop the eyebrow sits at the top edge of the page, clear of the drawing.
+            // A deployment whose top bar already names it omits the eyebrow and keeps the date alone.
             <p
               className={`text-[11px] font-semibold uppercase tracking-[0.18em] text-kumo-brand ${
                 sketch ? "absolute inset-x-0 top-6 text-center" : "mb-4"
               }`}
             >
-              {home.eyebrow}
-              <span aria-hidden="true" className="mx-2 text-kumo-inactive">·</span>
+              {home.eyebrow && (
+                <>
+                  {home.eyebrow}
+                  <span aria-hidden="true" className="mx-2 text-kumo-inactive">·</span>
+                </>
+              )}
               <span className="font-medium normal-case tracking-normal text-kumo-subtle">{todayLabel()}</span>
             </p>
           )}
