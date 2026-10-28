@@ -177,7 +177,12 @@ export function HomePageContent({ prompt }: HomeSearch) {
   return (
     // Flat enterprise treatment: no mesh, no watermark hexagon, no prompt-glow. The AppShell's
     // <main> already supplies a faint dotted grid as the page background.
-    <div className="relative isolate flex min-h-full w-full flex-col items-center justify-start px-4 pb-16 pt-10 sm:px-8 sm:pt-16 lg:pt-24">
+    <div
+      className={`relative isolate flex min-h-full w-full flex-col items-center justify-start px-4 pb-16 sm:px-8 ${
+        // Over the sketch backdrop the whole Home (headline, drawing, apps, composer) fits one screen.
+        sketch ? "pt-14" : "pt-10 sm:pt-16 lg:pt-24"
+      }`}
+    >
       {home ? (
         // A deployment with its own Home gets its own backdrop: a faint brand-tinted field and a
         // hairline grid that fade out above the composer, in place of the upstream hex mesh.
@@ -202,7 +207,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
           backdrop it also reserves the drawing's height, so the entity row starts below the etch. */}
       <div
         className={`flex w-full max-w-4xl flex-col items-stretch gap-8${
-          sketch ? " min-h-[420px]" : ""
+          sketch ? " min-h-[300px]" : ""
         }`}
       >
         {/* Hero */}
