@@ -560,13 +560,15 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
 
   /**
    * Mint a NEW connected account, with no OAuth flow. Safe to expose on this public interface: it
-   * only *creates* accounts — it cannot look up or return an existing account — and it takes no
-   * arguments, so it carries no user identity. The Workshop persists the returned account (like an
-   * OAuth-connected account) and treats it as the authority thereafter. Present only on vendors that
-   * set VendorDescription.autoProvisionsAccount; callers gate on that flag rather than probing, since
-   * RPC stubs cannot report optional-method presence.
+   * only *creates* accounts — it cannot look up or return an existing account. The Workshop persists
+   * the returned account (like an OAuth-connected account) and treats it as the authority
+   * thereafter. Present only on vendors that set VendorDescription.autoProvisionsAccount; callers
+   * gate on that flag rather than probing, since RPC stubs cannot report optional-method presence.
+   *
+   * `options.userEmail` is the verified email of the user the Workshop mints the account for (see
+   * CreateAccountOptions). A vendor that ignores it behaves exactly as it did with no argument.
    */
-  createAccount?(): Promise<Fetcher<GatekeeperUser>>;
+  createAccount?(options?: CreateAccountOptions): Promise<Fetcher<GatekeeperUser>>;
 
   /**
    * Get a gatekeeper class simulating a NEW resource of the creatable type `resourceUrlPattern`,
@@ -583,6 +585,19 @@ export interface GatekeeperVendor extends WorkerEntrypoint {
     action: ActionDescription;
   }>;
 }
+
+/**
+ * What the Workshop tells GatekeeperVendor.createAccount() about the user it mints an account for.
+ *
+ * `userEmail` is set only when the Workshop verified the address itself: the user signed in through
+ * Cloudflare Access or an authentication gatekeeper, whose verified email keys the user's Durable
+ * Object. It is absent for password accounts, whose id is a chosen username. Only a Worker holding a
+ * service binding to the vendor can call createAccount, so the value is as trustworthy as the
+ * Workshop and that binding; a vendor reached by other bound Workers should not treat it as proof.
+ */
+export type CreateAccountOptions = {
+  userEmail?: string;
+};
 
 export interface GatekeeperConnectCallback extends WorkerEntrypoint {
   /**

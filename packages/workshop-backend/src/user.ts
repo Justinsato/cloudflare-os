@@ -1430,11 +1430,23 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     await this.#createAutoProvisionedAccount(vendorId, vendor);
   }
 
+  // The email this user signed in with, when the Workshop verified it: a Cloudflare Access or
+  // authentication-gatekeeper sign-in, where the verified email is the profile id and keys this DO.
+  // Password accounts carry a chosen username instead, so they get none.
+  #verifiedEmail(): string | undefined {
+    if (!this.storage.created.get() || this.storage.passwordHashHash.get() !== null) return undefined;
+    let id = this.storage.profile.get().id;
+    return /^[^@\s]+@[^@\s]+$/.test(id) ? id : undefined;
+  }
+
   // Mint a vendor's connected account with no OAuth flow and persist it as auto-provisioned. The
   // caller must have already confirmed the vendor sets autoProvisionsAccount (so createAccount is
   // present) and that the user has no account for it yet.
   async #createAutoProvisionedAccount(vendorId: string, vendor: Service<GatekeeperVendor>): Promise<void> {
-    let account = await (vendor as unknown as AccountCreatorStub).createAccount();
+    let creator = vendor as unknown as AccountCreatorStub;
+    let userEmail = this.#verifiedEmail();
+    // With no verified email the call is the original no-argument one.
+    let account = await (userEmail ? creator.createAccount({ userEmail }) : creator.createAccount());
     // Resolve the description before allocating the id, so a describe() failure doesn't burn a slot.
     let description = await account.describe();
     let accountId = this.storage.nextAccountId.get();
