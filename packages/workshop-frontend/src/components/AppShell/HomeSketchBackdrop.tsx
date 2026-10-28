@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { runHubSketchAnimation } from './sketch/animation'
-import { applyHubLandmarkEdits } from './sketch/hubLandmarks'
+import { applyLfiqLandmarkSet } from './sketch/lfiqLandmarks'
 
-// Swap Coit Tower out and Oracle Park in on the shared catalog before any run, as the Hub does.
-applyHubLandmarkEdits()
+// Narrow the shared catalog to the LFIQ.os set (bridges, skyline, Back9, Pursue, Parcel, Watch).
+applyLfiqLandmarkSet()
 
 // The Hub's per-landmark scene wash (brick.hub `HubAmbientBackground`): the landmark's hue in the
 // sky, grounding into a warm terracotta. Lighter than the Hub's because nothing here sits in glass.
@@ -16,13 +16,12 @@ const VIOLET = scene('rgba(126,114,166,0.24)', 'rgba(136,124,170,0.12)', 'rgba(1
 const DEFAULT_SCENE = `linear-gradient(to bottom, rgba(120,146,170,0.16) 0%, rgba(140,146,160,0.08) 34%, ${GROUND})`
 const LANDMARK_SCENE: Record<string, string> = {
   'golden-gate-bridge': BLUE,
-  'painted-ladies': BLUE,
-  'salesforce-tower': BLUE,
   'bay-bridge': BLUE,
-  'ferry-building': BLUE,
-  'oracle-park': BLUE,
-  'transamerica-pyramid': GREEN,
   'sf-skyline': VIOLET,
+  'back9-ladies': BLUE,
+  'pursue-cable-car': GREEN,
+  'parcel-block': VIOLET,
+  'watch-alcatraz': BLUE,
 }
 
 /**
@@ -49,7 +48,7 @@ export default function HomeSketchBackdrop() {
       strokeStyle: 'rgba(23, 52, 84, 0.34)',
       lineWidth: 1.5,
       linesPerTick: (id) =>
-        id === 'oracle-park' || id === 'transamerica-pyramid' || id === 'salesforce-tower' ? 3 : 1,
+        id === 'back9-ladies' || id === 'parcel-block' ? 3 : 1,
     })
   }, [])
 
