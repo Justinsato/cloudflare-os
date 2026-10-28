@@ -27,7 +27,7 @@ const LANDMARK_SCENE: Record<string, string> = {
 /**
  * Home backdrop that etches San Francisco landmarks one stroke at a time, ported from the LFIQ
  * Hub's login and launcher background. Each figure gets the Hub's colour wash, crossfaded when the
- * figure changes. The band sits behind the headline and entity row and fades out above the
+ * figure changes. The band starts below the headline, sits behind the entity row and fades out above the
  * composer; reduced motion paints every landmark at once instead of animating.
  */
 export default function HomeSketchBackdrop() {
@@ -56,7 +56,7 @@ export default function HomeSketchBackdrop() {
   return (
     <div
       aria-hidden="true"
-      className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[320px] overflow-hidden"
+      className="pointer-events-none absolute inset-x-0 top-[92px] -z-10 h-[260px] overflow-hidden"
       style={{ maskImage: fade, WebkitMaskImage: fade }}
     >
       {(['a', 'b'] as const).map((layer) => (

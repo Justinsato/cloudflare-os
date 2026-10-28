@@ -207,7 +207,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
           backdrop it also reserves the drawing's height, so the entity row starts below the etch. */}
       <div
         className={`flex w-full max-w-4xl flex-col items-stretch gap-8${
-          sketch ? " min-h-[240px]" : ""
+          sketch ? " min-h-[270px]" : ""
         }`}
       >
         {/* Hero */}
@@ -225,7 +225,10 @@ export function HomePageContent({ prompt }: HomeSearch) {
             </p>
           )}
           <h1
-            className={home
+            className={sketch
+              // Over the sketch backdrop the headline is a single 18px line above the drawing.
+              ? "whitespace-nowrap text-[18px] font-medium leading-7 tracking-[-0.01em] text-kumo-strong"
+              : home
               ? "text-[40px] font-normal leading-[1.12] tracking-[-0.015em] text-kumo-strong sm:text-[60px] sm:leading-[68px]"
               : "text-3xl font-semibold tracking-tight leading-tight text-kumo-default sm:text-4xl"}
           >
