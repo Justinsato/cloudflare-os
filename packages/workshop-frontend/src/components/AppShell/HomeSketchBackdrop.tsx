@@ -57,7 +57,7 @@ export default function HomeSketchBackdrop() {
   return (
     <div
       aria-hidden="true"
-      className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[380px] overflow-hidden"
+      className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[320px] overflow-hidden"
       style={{ maskImage: fade, WebkitMaskImage: fade }}
     >
       {(['a', 'b'] as const).map((layer) => (

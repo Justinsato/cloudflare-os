@@ -207,7 +207,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
           backdrop it also reserves the drawing's height, so the entity row starts below the etch. */}
       <div
         className={`flex w-full max-w-4xl flex-col items-stretch gap-8${
-          sketch ? " min-h-[300px]" : ""
+          sketch ? " min-h-[240px]" : ""
         }`}
       >
         {/* Hero */}
@@ -250,12 +250,12 @@ export function HomePageContent({ prompt }: HomeSearch) {
 
       {/* Over the sketch backdrop the subtitle moves below the entity row, out of the drawing. */}
       {sketch && home?.subtitle && (
-        <p className="mx-auto mt-6 max-w-md text-center text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
+        <p className="mx-auto mt-4 max-w-md text-center text-[14px] leading-5 tracking-[-0.25px] text-kumo-subtle">
           {home.subtitle}
         </p>
       )}
 
-      <div className="mt-8 flex w-full max-w-2xl flex-col items-stretch gap-8">
+      <div className={`${sketch ? "mt-5" : "mt-8"} flex w-full max-w-2xl flex-col items-stretch gap-8`}>
         {/* Composer */}
         <ChatComposer
           createCapsuleGatekeeper={createCapsuleGatekeeper}
