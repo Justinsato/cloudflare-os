@@ -52,11 +52,11 @@ export default function HomeSketchBackdrop() {
     })
   }, [])
 
-  const fade = 'linear-gradient(to bottom, #000 0%, #000 55%, transparent 92%)'
+  const fade = 'linear-gradient(to bottom, #000 0%, #000 70%, transparent 96%)'
   return (
     <div
       aria-hidden="true"
-      className="pointer-events-none absolute inset-x-0 top-[92px] -z-10 h-[260px] overflow-hidden"
+      className="pointer-events-none absolute inset-x-0 top-0 -z-10 h-[352px] overflow-hidden"
       style={{ maskImage: fade, WebkitMaskImage: fade }}
     >
       {(['a', 'b'] as const).map((layer) => (
@@ -69,8 +69,9 @@ export default function HomeSketchBackdrop() {
           }}
         />
       ))}
-      {/* A fixed aspect band, centred, so the normalised figures keep the Hub's proportions. */}
-      <div className="absolute left-1/2 top-0 h-full w-full max-w-[1280px] -translate-x-1/2">
+      {/* A fixed aspect band, centred, so the normalised figures keep the Hub's proportions. The
+          wash runs from the top of the page; the drawing starts below the headline. */}
+      <div className="absolute bottom-0 left-1/2 top-[92px] w-full max-w-[1280px] -translate-x-1/2">
         <canvas ref={canvasRef} className="block h-full w-full dark:invert dark:brightness-90" />
       </div>
     </div>
