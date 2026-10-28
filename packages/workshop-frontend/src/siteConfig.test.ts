@@ -69,6 +69,23 @@ describe('parseSiteConfig', () => {
     expect(config.workspaces).toEqual({ b9: { theme: 'back9' } })
   })
 
+  it('reads app-only groups and gatekeeper app titles, dropping non-https apps', () => {
+    const config = parseSiteConfig({
+      nav: {
+        groups: [{ label: 'Applications', apps: [
+          { label: 'Pursue', href: 'https://pursue.lfiq.app/' },
+          { label: 'Bad', href: 'http://x.test/' },
+          { label: '', href: 'https://y.test/' },
+        ] }],
+        appTitles: { Skills: 'Context & Skills', Bad: 3 },
+      },
+    })
+    expect(config.nav?.groups).toEqual([
+      { label: 'Applications', workspaceIds: [], apps: [{ label: 'Pursue', href: 'https://pursue.lfiq.app/' }] },
+    ])
+    expect(config.nav?.appTitles).toEqual({ Skills: 'Context & Skills' })
+  })
+
   it('reads the sketch backdrop and app links on entities, dropping non-https links', () => {
     const config = parseSiteConfig({
       home: {
