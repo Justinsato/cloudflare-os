@@ -689,6 +689,19 @@ export interface AuthenticatedApi extends RpcTarget {
   setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void>;
 
   /**
+   * Brick: create a workspace titled `title` and return its id. Unlike newGadget() it is never
+   * provisional, so it is listed at once even before anyone opens it. For callers that create a
+   * workspace for later use (the Brick MCP portal); the Home composer keeps using newGadget().
+   */
+  createWorkspace(title: string): Promise<{id: string, title: string}>;
+
+  /**
+   * Brick, admins only: set (or, with null, clear) a workspace's sidebar group and brand theme,
+   * published to every client through ServerConfig.workspacePlacements.
+   */
+  setWorkspacePlacement(workspaceId: string, placement: WorkspacePlacement | null): Promise<void>;
+
+  /**
    * List the outputs of all the user's workspaces. Used to display the Outputs page, which lets
    * the user find things they made without remembering which workspace they made them in.
    *
@@ -1485,6 +1498,25 @@ export type ServerConfig = {
    * overrides the brand CSS variables with this (and derived shades) at runtime.
    */
   accentColor: string;
+
+  /**
+   * Brick: where admin-approved workspaces sit in the sidebar and which brand theme they wear,
+   * keyed by workspace id. Layered over the deploy-time site config (index.html's site-config
+   * block), so an agent-created workspace can join a nav group without a redeploy. Absent when
+   * none is set.
+   */
+  workspacePlacements?: Record<string, WorkspacePlacement>;
+};
+
+/**
+ * Brick: a workspace's sidebar group and brand theme, set by an admin (directly, or by approving an
+ * agent's requestWorkspacePlacement). `group` is a nav group label; one the deploy-time site config
+ * doesn't define becomes a new group after the configured ones. `theme` is a site theme name
+ * ("dual", "back9").
+ */
+export type WorkspacePlacement = {
+  group?: string;
+  theme?: string;
 };
 
 /**
@@ -2471,6 +2503,21 @@ export type ScheduleManualRunResult = {
  * One of the initiator's other workspaces, as the listWorkspaceOutputs tool reports it: titles
  * and output formats only, nothing else from that workspace.
  */
+/** One of the initiator's workspaces, as the agent's listWorkspaces tool reports it. */
+export type AgentWorkspaceInfo = {
+  id: string;
+  title: string;
+  /** Path that opens the workspace in the Workshop. */
+  url: string;
+  /** Whether the initiator owns it; false for a workspace shared with them. */
+  owned: boolean;
+  /** Whether this is the workspace the chat runs in. */
+  current?: true;
+  pinned?: true;
+  /** The admin-approved placement layered over the site config, if any (see WorkspacePlacement). */
+  placement?: WorkspacePlacement;
+};
+
 export type AgentWorkspaceOutputs = {
   workspaceTitle: string;
   gadgets: {title: string, format?: string}[];
@@ -4438,6 +4485,93 @@ export type AiToolCall = {
    * `truncated` is set when the index held more gadgets than the tool returns.
    */
   output?: {workspaces: AgentWorkspaceOutputs[], truncated?: true};
+} | {
+  /**
+   * List the initiator's workspaces (owned and shared, provisional ones excluded) with their ids,
+   * so other workspace tools can name them. Read-only.
+   */
+  toolName: "listWorkspaces";
+  input: {};
+
+  /** The listing as it was when the call ran; replay returns this rather than listing again. */
+  output?: {workspaces: AgentWorkspaceInfo[], truncated?: true};
+} | {
+  /**
+   * Create a new, empty workspace owned by the chat's initiator, titled as given. Applied
+   * immediately: the workspace appears in their list at once (it is never provisional). A
+   * requested nav group or theme is not applied by this call; it queues a placement request for
+   * the owner's approval, as requestWorkspacePlacement does.
+   */
+  toolName: "createWorkspace";
+  input: {
+    title: string;
+    group?: string;
+    theme?: string;
+    /** Why, shown on the placement approval card when a group or theme is requested. */
+    reason?: string;
+  };
+
+  /** What the call did, recorded when it ran: replay returns this and never creates again. */
+  output?: {
+    workspaceId: string;
+    title: string;
+    url: string;
+    placement?: {actionId: number, status: "pendingOwnerApproval"};
+    message: string;
+  };
+} | {
+  /** Rename the workspace the chat runs in. Applied immediately, like renameGadget. */
+  toolName: "renameWorkspace";
+  input: {title: string};
+
+  /** What the rename did, recorded when it was applied; replay returns this. */
+  output?: {workspaceId: string, oldTitle: string, title: string};
+} | {
+  /**
+   * Ask for a workspace's sidebar group and/or brand theme to be set. Never applies anything
+   * itself: it queues a pending action, which only the workspace owner, being a deployment admin,
+   * can approve (placements are deployment-wide).
+   */
+  toolName: "requestWorkspacePlacement";
+  input: {
+    /** The workspace to place; omitted means the one the chat runs in. */
+    workspaceId?: string;
+    group?: string;
+    theme?: string;
+    reason: string;
+  };
+
+  /** The queued request, recorded when it was made; replay returns this instead of queueing again. */
+  output?: {
+    workspaceId: string;
+    title: string;
+    actionId: number;
+    status: "pendingOwnerApproval";
+    alreadyPending?: boolean;
+    message: string;
+  };
+} | {
+  /**
+   * Ask the workspace owner to share the workspace the chat runs in with a person. Never shares
+   * anything itself: only the owner's approval adds the collaborator.
+   */
+  toolName: "requestWorkspaceShare";
+  input: {
+    /** The person's sign-in email (their account must exist: they must have signed in once). */
+    email: string;
+    role: CollaboratorRole;
+    reason: string;
+  };
+
+  /** The queued request, recorded when it was made; replay returns this instead of queueing again. */
+  output?: {
+    email: string;
+    role: CollaboratorRole;
+    actionId: number;
+    status: "pendingOwnerApproval";
+    alreadyPending?: boolean;
+    message: string;
+  };
 } | {
   toolName: "executeCode";
   input: {

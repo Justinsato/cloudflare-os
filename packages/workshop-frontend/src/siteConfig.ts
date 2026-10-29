@@ -6,6 +6,8 @@
 // workspaces the way the deployment organizes them. Without the block everything renders as
 // upstream. Read once, synchronously, so nothing flashes from the default copy.
 
+import type { WorkspacePlacement } from '@gadgets/workshop-shared/api'
+
 /** A Home priority: a strategic theme that opens the workspace (and optionally the output) doing that work. */
 export interface HomePriority {
   label: string
@@ -210,6 +212,42 @@ export function parseSiteConfig(raw: unknown): SiteConfig {
   if (!raw || typeof raw !== 'object') return {}
   const r = raw as Record<string, unknown>
   return { home: parseHome(r.home), nav: parseNav(r.nav), workspaces: parseWorkspaces(r.workspaces) }
+}
+
+/**
+ * Layers the admin-approved workspace placements (ServerConfig.workspacePlacements) over a site
+ * config: a placed workspace leaves whatever group the static config put it in and joins the group
+ * with its label (a new group after the configured ones when no group has that label), and its
+ * theme replaces the configured one. Returns `config` itself when there is nothing to layer, so
+ * memoized callers keep a stable value.
+ */
+export function withWorkspacePlacements(
+  config: SiteConfig,
+  placements: Record<string, WorkspacePlacement> | undefined,
+): SiteConfig {
+  const entries = Object.entries(placements ?? {})
+  if (entries.length === 0) return config
+  const groups: NavGroup[] = (config.nav?.groups ?? []).map((g) => ({ ...g, workspaceIds: [...g.workspaceIds] }))
+  const workspaces: Record<string, WorkspaceSiteConfig> = { ...config.workspaces }
+  let grouped = false
+  for (const [id, placement] of entries) {
+    if (isString(placement.group)) {
+      for (const g of groups) g.workspaceIds = g.workspaceIds.filter((w) => w !== id)
+      let target = groups.find((g) => g.label === placement.group)
+      if (!target) {
+        target = { label: placement.group, workspaceIds: [] }
+        groups.push(target)
+      }
+      target.workspaceIds.push(id)
+      grouped = true
+    }
+    if (isThemeName(placement.theme)) workspaces[id] = { ...workspaces[id], theme: placement.theme }
+  }
+  return {
+    ...config,
+    ...(grouped ? { nav: { ...config.nav, groups } } : {}),
+    ...(Object.keys(workspaces).length > 0 ? { workspaces } : {}),
+  }
 }
 
 let cached: SiteConfig | null = null

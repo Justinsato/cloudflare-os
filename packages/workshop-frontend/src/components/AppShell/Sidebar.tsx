@@ -25,7 +25,8 @@ import {
   SidebarSection,
 } from './SidebarWorkspaces'
 import SidebarUtilityStrip from './SidebarUtilityStrip'
-import { siteConfig, type NavApp } from '../../siteConfig'
+import { type NavApp } from '../../siteConfig'
+import { useSiteConfig } from '../../useSiteConfig'
 import { workspaceMonogram } from '../../workspaceMonogram'
 import { useState, type ReactNode } from 'react'
 import { inNativeApp, returnToInstalls } from '../../features/native-app/nativeApp'
@@ -56,7 +57,7 @@ export default function Sidebar({
   // and is connected / enabled for everyone). Disabled or not-yet-connected ones aren't returned, so
   // they simply don't appear. The set is fully dynamic — no gatekeeper is hardcoded.
   const gatekeeperApps = useGatekeeperApps()
-  const nav = siteConfig().nav
+  const nav = useSiteConfig().nav
   const buildSection = nav?.buildSection === true
   // A site config can move Build down among the workspace groups, and list Outputs inside a group.
   const buildAfterGroup = buildSection && !collapsed

@@ -638,6 +638,16 @@ function getToolCallSummary(
       return { verb: "Ran schedule", target: tc.output?.title ?? `schedule ${tc.input.hookId}` };
     case "listWorkspaceOutputs":
       return { verb: "Listed outputs in other workspaces" };
+    case "listWorkspaces":
+      return { verb: "Listed workspaces" };
+    case "createWorkspace":
+      return { verb: "Created workspace", target: tc.output?.title ?? tc.input.title };
+    case "renameWorkspace":
+      return { verb: "Renamed workspace", target: tc.input.title };
+    case "requestWorkspacePlacement":
+      return { verb: "Requested placement of", target: tc.output?.title ?? "workspace" };
+    case "requestWorkspaceShare":
+      return { verb: "Requested sharing with", target: tc.input.email };
     case "removeGadget":
       return {
         verb: "Requested removal of",
@@ -782,6 +792,17 @@ function describeToolCallCount(toolName: AiToolCall["toolName"], count: number):
       return `Ran ${pluralize(count, "schedule")}`;
     case "listWorkspaceOutputs":
       return "Listed outputs in other workspaces";
+    case "listWorkspaces":
+      return "Listed workspaces";
+    case "createWorkspace":
+      return `Created ${pluralize(count, "workspace")}`;
+    case "renameWorkspace":
+      return "Renamed workspace";
+    case "requestWorkspacePlacement":
+      return count === 1
+          ? "Requested a workspace placement" : `Requested ${count} workspace placements`;
+    case "requestWorkspaceShare":
+      return count === 1 ? "Requested a share" : `Requested ${count} shares`;
     case "observeUserChanges":
       return `Observed ${pluralize(count, "change set")}`;
     case "giveUp":
@@ -834,7 +855,16 @@ function getToolIcon(
     case "runScheduleNow":
       return Play;
     case "listWorkspaceOutputs":
+    case "listWorkspaces":
       return MagnifyingGlass;
+    case "createWorkspace":
+      return Plus;
+    case "renameWorkspace":
+      return PencilSimple;
+    case "requestWorkspacePlacement":
+      return LinkSimple;
+    case "requestWorkspaceShare":
+      return LinkSimple;
     case "listBlueprints":
       return Blueprint;
     case "observeUserChanges":
@@ -880,6 +910,16 @@ function getProvisionalToolLabel(toolName: AiToolCall["toolName"] | null | undef
       return "Running schedule";
     case "listWorkspaceOutputs":
       return "Listing outputs in other workspaces";
+    case "listWorkspaces":
+      return "Listing workspaces";
+    case "createWorkspace":
+      return "Creating workspace";
+    case "renameWorkspace":
+      return "Renaming workspace";
+    case "requestWorkspacePlacement":
+      return "Requesting workspace placement";
+    case "requestWorkspaceShare":
+      return "Requesting share";
     case "executeCode":
       return "Running code";
     case "webFetch":
@@ -916,6 +956,11 @@ function getProvisionalToolVerb(toolName: AiToolCall["toolName"]): string {
     case "requestScheduleChange": return "Requesting schedule change";
     case "runScheduleNow": return "Running schedule";
     case "listWorkspaceOutputs": return "Listing outputs in other workspaces";
+    case "listWorkspaces": return "Listing workspaces";
+    case "createWorkspace": return "Creating workspace";
+    case "renameWorkspace": return "Renaming workspace";
+    case "requestWorkspacePlacement": return "Requesting workspace placement";
+    case "requestWorkspaceShare": return "Requesting share";
     case "executeCode": return "Running code";
     case "webFetch": return "Fetching";
     case "observeUserChanges": return "Observing user changes";
@@ -951,6 +996,11 @@ function describeProvisionalToolCount(toolName: AiToolCall["toolName"], count: n
     case "requestScheduleChange": return `Requesting ${pluralize(count, "schedule change")}`;
     case "runScheduleNow": return `Running ${pluralize(count, "schedule")}`;
     case "listWorkspaceOutputs": return "Listing outputs in other workspaces";
+    case "listWorkspaces": return "Listing workspaces";
+    case "createWorkspace": return `Creating ${pluralize(count, "workspace")}`;
+    case "renameWorkspace": return "Renaming workspace";
+    case "requestWorkspacePlacement": return `Requesting ${pluralize(count, "workspace placement")}`;
+    case "requestWorkspaceShare": return `Requesting ${pluralize(count, "share")}`;
     case "observeUserChanges": return `Observing ${pluralize(count, "change set")}`;
     case "giveUp": return "Stopping";
     case "listBlueprints": return "Listing blueprints";

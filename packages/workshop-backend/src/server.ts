@@ -1,7 +1,7 @@
 import { RpcStub, RpcTarget, newHttpBatchRpcResponse, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
-import { PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, AiModelProvider, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber } from '@gadgets/workshop-shared/api';
+import { PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, AiModelProvider, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, WorkspacePlacement } from "@gadgets/workshop-shared/api";
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
 import { getServerConfig } from "./deployment-config.js";
 import { isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
@@ -32,6 +32,7 @@ import { resolveUiFeatureFlags } from "./feature-flags";
 import { serveSiteLogo, SITE_LOGO_PATH } from "./site-logo.js";
 import { createWorkshopLogger } from "./observability";
 import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
+import { isAdminName, readWorkspacePlacements, validatePlacement, validateWorkspaceTitle, writeWorkspacePlacement } from "./workspace-placements.js";
 import { deviceSessionCallback } from "./auth/device-session-callback.js";
 
 const logger = createWorkshopLogger("workshop.server");
@@ -126,22 +127,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   }
 
   #isAdmin(): boolean {
-    let name = this.#userId.name;
-    let admins = this.env.ADMINS;
-
-    if (!name || !admins) return false;
-
-    if (typeof admins === "string") {
-      // Admins should be a JSON binding of array type, but `.env` doesn't actually let you
-      // specify JSON bindings, so we also support a string that parses as JSON array.
-      admins = JSON.parse(admins);
-    }
-
-    if (!Array.isArray(admins)) {
-      throw new TypeError("ADMINS must be configured as an array of usernames.");
-    }
-
-    return admins.includes(name);
+    return isAdminName(this.env, this.#userId.name);
   }
 
   whoami(): Promise<AiChatAuthorInfo> {
@@ -359,6 +345,36 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
 
   async setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void> {
     return retryOnDoReset(() => this.#user.updatePinned(workspaceId, pinned));
+  }
+
+  async createWorkspace(title: string): Promise<{id: string, title: string}> {
+    let validated = validateWorkspaceTitle(title);
+    let id = this.overseers.newUniqueId().toString();
+    await this.#user.newGadget(id, validated);
+    await this.overseers.get(this.overseers.idFromString(id))
+        .initializeOwnedWorkspace(this.#userId.toString(), validated);
+    // A listed workspace, not a provisional one: newGadget() leaves lastActive unset until the
+    // first activity, and the home listing hides it until then.
+    await this.#user.setGadgetLastActive(id, new Date(), undefined);
+    recordAnalytics(this.ctx, this.env, {
+      event_name: "gadget_created",
+      user_id: this.#userId.toString(),
+      gadget_id: id,
+      source: "blank",
+    });
+    return {id, title: validated};
+  }
+
+  async setWorkspacePlacement(workspaceId: string, placement: WorkspacePlacement | null)
+      : Promise<void> {
+    if (!this.#isAdmin()) {
+      throw new Error("Only an admin can place a workspace in the sidebar.");
+    }
+    if (typeof workspaceId !== "string" || !/^[0-9a-f]{64}$/.test(workspaceId)) {
+      throw new Error("Not a workspace id.");
+    }
+    await writeWorkspacePlacement(this.env, workspaceId,
+        placement === null ? null : validatePlacement(placement));
   }
 
   listOutputs(): Promise<ListOutputsResult> {
@@ -887,9 +903,11 @@ class OperatorSession extends NativeRpcTarget {
   #api: AuthenticatedApiImpl;
   #overseers: DurableObjectNamespace<OverseerDurableObject>;
   #userId: DurableObjectId;
+  #env: Env;
 
   constructor(ctx: ExecutionContext, env: Env, userId: DurableObjectId) {
     super();
+    this.#env = env;
     this.#api = new AuthenticatedApiImpl(ctx, env, userId, () => {});
     this.#overseers = ctx.exports.OverseerDurableObject;
     this.#userId = userId;
@@ -901,6 +919,21 @@ class OperatorSession extends NativeRpcTarget {
 
   getPreferredModel(): Promise<string | null> {
     return this.#api.getPreferredModel();
+  }
+
+  /** As AuthenticatedApi.createWorkspace(): a listed (never provisional) workspace. */
+  createWorkspace(title: string): Promise<{id: string, title: string}> {
+    return this.#api.createWorkspace(title);
+  }
+
+  /** As AuthenticatedApi.setWorkspacePlacement(); the operator must be an admin. */
+  setWorkspacePlacement(workspaceId: string, placement: WorkspacePlacement | null): Promise<void> {
+    return this.#api.setWorkspacePlacement(workspaceId, placement);
+  }
+
+  /** Every workspace placement, as clients receive them in ServerConfig. */
+  listWorkspacePlacements(): Promise<Record<string, WorkspacePlacement>> {
+    return readWorkspacePlacements(this.#env);
   }
 
   /** Opens a workspace as this user, exactly as AuthenticatedApi.openGadget() does. */

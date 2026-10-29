@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseSiteConfig } from './siteConfig'
+import { parseSiteConfig, withWorkspacePlacements, type SiteConfig } from './siteConfig'
 
 describe('parseSiteConfig', () => {
   it('reads per-workspace assistant names', () => {
@@ -105,5 +105,55 @@ describe('parseSiteConfig', () => {
     ])
     expect(parseSiteConfig({ home: { title: 'T', priorities: [], backdrop: 'mesh' } }).home?.backdrop)
       .toBeUndefined()
+  })
+})
+
+describe('withWorkspacePlacements', () => {
+  const config: SiteConfig = {
+    nav: {
+      groups: [
+        { label: 'Portfolio', workspaceIds: ['a', 'b'] },
+        { label: 'Tools', workspaceIds: ['c'], links: ['outputs'] },
+      ],
+      buildSection: true,
+    },
+    workspaces: { c: { theme: 'dual', assistantName: 'Brick' } },
+  }
+
+  it('returns the config itself when there is nothing to layer', () => {
+    expect(withWorkspacePlacements(config, undefined)).toBe(config)
+    expect(withWorkspacePlacements(config, {})).toBe(config)
+  })
+
+  it('moves a placed workspace into its group and adds an unknown group last', () => {
+    const merged = withWorkspacePlacements(config, {
+      b: { group: 'Tools' },
+      n: { group: 'Capital', theme: 'back9' },
+    })
+    expect(merged.nav).toEqual({
+      groups: [
+        { label: 'Portfolio', workspaceIds: ['a'] },
+        { label: 'Tools', workspaceIds: ['c', 'b'], links: ['outputs'] },
+        { label: 'Capital', workspaceIds: ['n'] },
+      ],
+      buildSection: true,
+    })
+    expect(merged.workspaces).toEqual({
+      c: { theme: 'dual', assistantName: 'Brick' },
+      n: { theme: 'back9' },
+    })
+    // The static config is untouched.
+    expect(config.nav?.groups[0].workspaceIds).toEqual(['a', 'b'])
+  })
+
+  it('overrides a theme without touching the rest of the workspace settings', () => {
+    const merged = withWorkspacePlacements(config, { c: { theme: 'lfiq' } })
+    expect(merged.workspaces?.c).toEqual({ theme: 'lfiq', assistantName: 'Brick' })
+    expect(merged.nav).toBe(config.nav)
+  })
+
+  it('works without a static nav', () => {
+    expect(withWorkspacePlacements({}, { x: { group: 'Ops' } }).nav)
+      .toEqual({ groups: [{ label: 'Ops', workspaceIds: ['x'] }] })
   })
 })
