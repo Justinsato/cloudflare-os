@@ -29,7 +29,7 @@ import { useAuthenticatedApi } from '../../AuthContext'
 import ShareModal from '../../ShareModal'
 import DeleteConfirmationDialog from '../DeleteConfirmationDialog'
 import SidebarGadgetRow from './SidebarGadgetRow'
-import { siteConfig } from '../../siteConfig'
+import { useSiteConfig } from '../../useSiteConfig'
 import { workspaceNavSections } from '../../workspaceNavOrder'
 import { WORKSPACES_CHANGED_EVENT } from '../../workspaceListBus'
 
@@ -147,7 +147,8 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
 
   // Deployment-defined groups (site config) in configured order, then Favorites, then the rest.
   // Shared with the top-bar WorkspaceSwitcher so both list workspaces the same way.
-  const navGroups = useMemo(() => siteConfig().nav?.groups ?? [], [])
+  const configuredGroups = useSiteConfig().nav?.groups
+  const navGroups = useMemo(() => configuredGroups ?? [], [configuredGroups])
   const { groups, favorites, recent } = useMemo(
     () => workspaceNavSections(gadgets, navGroups, (g) => matchText(g.title)),
     [gadgets, matchText, navGroups],

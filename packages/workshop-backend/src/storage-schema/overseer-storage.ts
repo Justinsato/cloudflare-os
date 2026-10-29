@@ -430,6 +430,16 @@ export type ActionRecord = {
    * SCHEDULE_CHANGE_GATEKEEPER_ID sentinel): which hook, and what the owner is asked to do to it.
    */
   hookChange?: {hookId: number, change: "enable" | "disable" | "delete"};
+  /**
+   * Brick: set on the requests the agent's requestWorkspacePlacement tool queues (under the
+   * WORKSPACE_PLACEMENT_GATEKEEPER_ID sentinel): which workspace, and the group and theme asked for.
+   */
+  workspacePlacement?: {workspaceId: string, workspaceTitle: string, group?: string, theme?: string};
+  /**
+   * Brick: set on the requests the agent's requestWorkspaceShare tool queues (under the
+   * WORKSPACE_SHARE_GATEKEEPER_ID sentinel): who, in which role.
+   */
+  workspaceShare?: {email: string, role: "build" | "use"};
   resolvedBy?: AiChatAuthorInfo;  // set when resolved (approved/rejected); absent while pending (or legacy)
   autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
 } | {

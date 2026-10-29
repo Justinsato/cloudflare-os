@@ -1,6 +1,7 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, AgentScheduleInfo, AgentWorkspaceOutputs, HookRunInfo, ScheduleChangeKind, ScheduleManualRunResult, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, AgentScheduleInfo, AgentWorkspaceInfo, AgentWorkspaceOutputs, HookRunInfo, ScheduleChangeKind, ScheduleManualRunResult, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { isAdminName, readWorkspacePlacements, validatePlacement, validateWorkspaceTitle, workspaceUrl, writeWorkspacePlacement } from "./workspace-placements.js";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
   type CodeContent, type CodeChange } from "@gadgets/workshop-shared/code-change";
@@ -416,6 +417,17 @@ const GADGET_REMOVAL_GATEKEEPER_ID = -2;
 // toggle and delete; nothing auto-approves it (applyPendingAction refuses any sentinel).
 const SCHEDULE_CHANGE_GATEKEEPER_ID = -3;
 
+// Brick: sentinel gatekeeperIds for the pending "action" records the agent's
+// requestWorkspacePlacement and requestWorkspaceShare tools queue. Handled like
+// GADGET_REMOVAL_GATEKEEPER_ID: approve/reject recognize them (owner only; a placement also needs
+// the owner to be a deployment admin, since it changes everyone's sidebar) and never dereference a
+// gatekeeper; nothing auto-approves them (applyPendingAction refuses any sentinel).
+const WORKSPACE_PLACEMENT_GATEKEEPER_ID = -4;
+const WORKSPACE_SHARE_GATEKEEPER_ID = -5;
+
+// Caps on the listWorkspaces tool's result.
+const AGENT_WORKSPACES_MAX = 300;
+
 // How long runScheduleNow waits for the callback before reporting it as still running. The call
 // carries on either way; its outcome lands in the hook's run record when it settles.
 const MANUAL_RUN_WAIT_MS = 60_000;
@@ -720,6 +732,8 @@ class OverseerImpl implements AgentHooks {
   ownerProfileId?: string;
 
   users: DurableObjectNamespace<UserDurableObject>;
+  // Brick: where the agent's createWorkspace tool makes new workspaces.
+  overseers: DurableObjectNamespace<OverseerDurableObject>;
 
   // The workspace's git object store, holding all gadgets' committed code (see git-store.ts).
   // One instance per DO so isomorphic-git's parse cache is shared.
@@ -1119,6 +1133,7 @@ class OverseerImpl implements AgentHooks {
       pull: (gatekeeperId, oids, hints) => this.#pullGitObjects(gatekeeperId, oids, hints),
     });
     this.users = this.ctx.exports.UserDurableObject;
+    this.overseers = this.ctx.exports.OverseerDurableObject;
     this.ownerId = this.storage.ownerId.get();
 
     // Run any pending storage migration (see storage-schema/overseer-migrations.ts) before
@@ -2170,6 +2185,251 @@ class OverseerImpl implements AgentHooks {
       ++count;
     }
     return {workspaces: [...byWorkspace.values()], ...(truncated ? {truncated: true} : {})};
+  }
+
+  // Brick: the agent's listWorkspaces tool (see AgentHooks.listWorkspaces), from the initiator's
+  // own User DO listing, which holds only workspaces they own or that are shared with them.
+  async listWorkspaces(initiator: AiChatAuthorInfo)
+      : Promise<{workspaces: AgentWorkspaceInfo[], truncated?: true}> {
+    let userStub = this.users.get(this.users.idFromName(initiator.id));
+    let [listing, placements] = await Promise.all([
+      userStub.listGadgets(),
+      readWorkspacePlacements(this.env),
+    ]);
+    let self = this.ctx.id.toString();
+    let workspaces = listing.slice(0, AGENT_WORKSPACES_MAX).map((workspace): AgentWorkspaceInfo => ({
+      id: workspace.id,
+      title: workspace.title,
+      url: workspaceUrl(workspace.id),
+      owned: !workspace.owner,
+      ...(workspace.id === self ? {current: true as const} : {}),
+      ...(workspace.pinned ? {pinned: true as const} : {}),
+      ...(placements[workspace.id] ? {placement: placements[workspace.id]} : {}),
+    }));
+    return {workspaces, ...(listing.length > AGENT_WORKSPACES_MAX ? {truncated: true} : {})};
+  }
+
+  // Brick: the agent's createWorkspace tool (see AgentHooks.createWorkspace). Registers the
+  // workspace with the initiator's User DO, initializes its Overseer as theirs, then marks it
+  // active so it is listed (newGadget() alone leaves it provisional).
+  async createWorkspace(initiator: AiChatAuthorInfo, title: string)
+      : Promise<{id: string, title: string}> {
+    if (initiator.type !== "user") {
+      throw new Error("A workspace can only be created for a signed-in user.");
+    }
+    let validated = validateWorkspaceTitle(title);
+    let overseers = this.overseers;
+    let id = overseers.newUniqueId().toString();
+    let userDoId = this.users.idFromName(initiator.id);
+    let userStub = this.users.get(userDoId);
+    await userStub.newGadget(id, validated);
+    await overseers.get(overseers.idFromString(id))
+        .initializeOwnedWorkspace(userDoId.toString(), validated);
+    await userStub.setGadgetLastActive(id, new Date(), undefined);
+    this.logger.info("agent created workspace", {event: "agent.workspace.created"});
+    return {id, title: validated};
+  }
+
+  // Brick: the agent's renameWorkspace tool. The same writes as the client's Overseer.setTitle().
+  async renameWorkspace(title: string)
+      : Promise<{workspaceId: string, oldTitle: string, title: string}> {
+    let validated = validateWorkspaceTitle(title);
+    let oldTitle = this.storage.title.get();
+    this.storage.title.put(validated);
+    if (this.ownerId) {
+      let owner = this.users.get(this.users.idFromString(this.ownerId));
+      await owner.updateTitle(this.ctx.id.toString(), validated);
+    }
+    return {workspaceId: this.ctx.id.toString(), oldTitle, title: validated};
+  }
+
+  // Brick: the agent's requestWorkspacePlacement tool. Queues a pending action under the
+  // WORKSPACE_PLACEMENT_GATEKEEPER_ID sentinel; approveAction applies it (owner, and an admin).
+  async requestWorkspacePlacement(chatId: number, initiator: AiChatAuthorInfo,
+                                  workspaceId: string | undefined,
+                                  placement: {group?: string, theme?: string}, reason: string)
+      : Promise<{workspaceId: string, title: string, actionId: number, alreadyPending: boolean}> {
+    reason = reason.trim();
+    if (!reason) {
+      throw new Error("Give a reason for the placement; the owner sees it when deciding.");
+    }
+    if (reason.length > 2000) {
+      throw new Error("The reason is too long. Keep it to a sentence or two.");
+    }
+    let validated = validatePlacement(placement);
+    if (!validated) {
+      throw new Error("Ask for a group, a theme, or both.");
+    }
+    let self = this.ctx.id.toString();
+    let targetId = workspaceId?.trim() || self;
+    let title: string;
+    if (targetId === self) {
+      title = this.storage.title.get();
+    } else {
+      // Only a workspace the initiator owns: the request must not reach into someone else's.
+      let meta = await this.users.get(this.users.idFromName(initiator.id)).getGadget(targetId);
+      if (!meta || meta.owner) {
+        throw new Error(`No workspace ${targetId} owned by you. Use listWorkspaces for ids.`);
+      }
+      title = meta.title;
+    }
+
+    for (let queued of this.storage.actions.pendingByGatekeeper.get(
+        WORKSPACE_PLACEMENT_GATEKEEPER_ID)) {
+      let asked = queued.type === "action" ? queued.workspacePlacement : undefined;
+      if (asked?.workspaceId === targetId && asked.group === validated.group &&
+          asked.theme === validated.theme) {
+        return {workspaceId: targetId, title, actionId: queued.id, alreadyPending: true};
+      }
+    }
+
+    let fields: {label: string, kind: "inline" | "text", value: string}[] =
+        [{label: "Workspace", kind: "inline", value: title}];
+    if (validated.group) fields.push({label: "Sidebar group", kind: "inline", value: validated.group});
+    if (validated.theme) fields.push({label: "Theme", kind: "inline", value: validated.theme});
+    fields.push({label: "Reason", kind: "text", value: reason});
+
+    let caller: GatekeeperCaller = {from: "agent", chatId};
+    let actionId = this.storage.nextActionId.get();
+    this.storage.nextActionId.put(actionId + 1);
+    let record: ActionRecord = {
+      id: actionId,
+      gatekeeperId: WORKSPACE_PLACEMENT_GATEKEEPER_ID,
+      caller,
+      resourceTitle: title,
+      // No gatekeeper action key: the request is identified by workspacePlacement.
+      action: 0,
+      workspacePlacement: {workspaceId: targetId, workspaceTitle: title, ...validated},
+      createdAt: new Date(),
+      state: "pending",
+      type: "action",
+      description: {
+        title: `Place workspace "${title}"`,
+        description:
+            "The agent asks to set where this workspace sits in the sidebar and which theme it " +
+            "wears, for everyone on this OS. Only the workspace owner can approve it, and only " +
+            "while they are an admin; rejecting leaves the sidebar as it is.",
+        fields,
+        descriptionIsComplete: true,
+        implementsRevert: false,
+      },
+    };
+    this.storage.actions.put(record);
+    this.#associateAction(caller, actionId);
+    this.traceAgentActionApproval(record, "requested");
+    return {workspaceId: targetId, title, actionId, alreadyPending: false};
+  }
+
+  // Brick: apply an approved requestWorkspacePlacement. The caller (approveAction) has checked the
+  // approver is the owner and an admin. A failed write throws before the record changes.
+  async applyWorkspacePlacement(record: ActionRecord & {type: "action"},
+                                resolvedBy: AiChatAuthorInfo): Promise<void> {
+    let asked = record.workspacePlacement;
+    if (record.gatekeeperId !== WORKSPACE_PLACEMENT_GATEKEEPER_ID || !asked) {
+      throw new Error(`Not a workspace placement request: ${record.id}`);
+    }
+    if (this.storage.actions.get(record.id)?.state !== "pending") {
+      throw new Error(`Action is not pending: ${record.id}`);
+    }
+    let current = (await readWorkspacePlacements(this.env))[asked.workspaceId] ?? {};
+    // A request for only a group (or only a theme) keeps the other half as it was.
+    await writeWorkspacePlacement(this.env, asked.workspaceId, {
+      ...current,
+      ...(asked.group ? {group: asked.group} : {}),
+      ...(asked.theme ? {theme: asked.theme} : {}),
+    });
+    this.#recordSentinelDecision(record.id, "approved", resolvedBy);
+  }
+
+  // Brick: the agent's requestWorkspaceShare tool. Queues a pending action under the
+  // WORKSPACE_SHARE_GATEKEEPER_ID sentinel; approveAction applies it through addCollaborator.
+  requestWorkspaceShare(chatId: number, email: string, role: CollaboratorRole, reason: string)
+      : {actionId: number, alreadyPending: boolean} {
+    reason = reason.trim();
+    if (!reason) {
+      throw new Error("Give a reason for sharing; the owner sees it when deciding.");
+    }
+    if (reason.length > 2000) {
+      throw new Error("The reason is too long. Keep it to a sentence or two.");
+    }
+    if (role !== "use" && role !== "build") {
+      throw new Error(`Unknown role "${role}". Use "use" or "build".`);
+    }
+    let normalized = typeof email === "string" ? email.trim().toLowerCase() : "";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) {
+      throw new Error("Give the person's sign-in email address.");
+    }
+    for (let queued of this.storage.actions.pendingByGatekeeper.get(
+        WORKSPACE_SHARE_GATEKEEPER_ID)) {
+      let asked = queued.type === "action" ? queued.workspaceShare : undefined;
+      if (asked?.email === normalized && asked.role === role) {
+        return {actionId: queued.id, alreadyPending: true};
+      }
+    }
+    let title = this.storage.title.get();
+    let caller: GatekeeperCaller = {from: "agent", chatId};
+    let actionId = this.storage.nextActionId.get();
+    this.storage.nextActionId.put(actionId + 1);
+    let record: ActionRecord = {
+      id: actionId,
+      gatekeeperId: WORKSPACE_SHARE_GATEKEEPER_ID,
+      caller,
+      resourceTitle: title,
+      // No gatekeeper action key: the request is identified by workspaceShare.
+      action: 0,
+      workspaceShare: {email: normalized, role},
+      createdAt: new Date(),
+      state: "pending",
+      type: "action",
+      description: {
+        title: `Share workspace with ${normalized}`,
+        description:
+            `The agent asks to add ${normalized} to this workspace as a ` +
+            `${role === "build" ? "builder (can chat and change it)" : "user (can use its gadgets)"}. ` +
+            "Only the workspace owner can approve it; rejecting shares nothing.",
+        fields: [
+          {label: "Person", kind: "inline", value: normalized},
+          {label: "Role", kind: "inline", value: role},
+          {label: "Reason", kind: "text", value: reason},
+        ],
+        descriptionIsComplete: true,
+        implementsRevert: false,
+      },
+    };
+    this.storage.actions.put(record);
+    this.#associateAction(caller, actionId);
+    this.traceAgentActionApproval(record, "requested");
+    return {actionId, alreadyPending: false};
+  }
+
+  // Brick: record the decision on a workspace placement or share request. Re-reads the record, as
+  // a concurrent decision may have landed while the apply awaited.
+  #recordSentinelDecision(actionId: number, state: "approved" | "rejected",
+                          resolvedBy: AiChatAuthorInfo): void {
+    let current = this.storage.actions.get(actionId);
+    if (current?.type !== "action" || current.state !== "pending") return;
+    current.state = state;
+    current.appliedAt = new Date();
+    current.resolvedBy = resolvedBy;
+    if (state === "approved") current.autoApproved = false;
+    this.storage.actions.put(current);
+    this.traceAgentActionApproval(current, state === "approved" ? "approved" : "denied");
+  }
+
+  // Brick: record a share request's approval once the collaborator was added (OverseerApi's
+  // approveAction adds them, since adding needs the owner's sharing session).
+  recordWorkspaceShareApproved(record: ActionRecord & {type: "action"},
+                               resolvedBy: AiChatAuthorInfo): void {
+    this.#recordSentinelDecision(record.id, "approved", resolvedBy);
+  }
+
+  // Brick: record the owner's rejection of a workspace placement or share request.
+  rejectWorkspaceRequest(record: ActionRecord & {type: "action"}, resolvedBy: AiChatAuthorInfo)
+      : void {
+    if (this.storage.actions.get(record.id)?.state !== "pending") {
+      throw new Error(`Action is not pending: ${record.id}`);
+    }
+    this.#recordSentinelDecision(record.id, "rejected", resolvedBy);
   }
 
   // Chat deletion's workpiece cleanup: remove the gadgets and worktrees still provisional to the
@@ -10161,6 +10421,31 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
+   * Brick: initialize a workspace that was just registered with its owner (UserDurableObject
+   * newGadget) without opening a session on it, titled `title`: what open() does on a first open,
+   * for a workspace created for later use (the agent's createWorkspace tool, the MCP portal's
+   * create_workspace). Reachable only from a Worker binding the Overseer namespace; no client RPC
+   * exposes it. Refuses a workspace already initialized, so it can't take one over.
+   */
+  async initializeOwnedWorkspace(ownerUserId: string, title: string): Promise<void> {
+    await this.ctx.blockConcurrencyWhile(async () => {
+      if (this.impl.ownerId) {
+        throw new Error("This workspace is already initialized.");
+      }
+      let owner = this.impl.users.get(this.impl.users.idFromString(ownerUserId));
+      let meta = await owner.getGadget(this.ctx.id.toString());
+      // As in open(): the owner must already list it, and not as a workspace shared to them.
+      if (!meta || meta.owner) {
+        throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotFound);
+      }
+      this.impl.ownerId = ownerUserId;
+      this.impl.storage.ownerId.put(ownerUserId);
+      this.#initializeNewWorkspace();
+      this.impl.storage.title.put(title);
+    });
+  }
+
+  /**
    * This workspace's outputs, for the owner to fold into their index. Every registry change and
    * every owner open already pushes, so this exists only to catch up workspaces that predate the
    * index. Null unless the caller really is the owner, so nobody else can read the snapshot.
@@ -11613,6 +11898,41 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       return;
     }
 
+    // Brick: a requestWorkspacePlacement request. The owner decides, and must be a deployment
+    // admin, because the placement changes every user's sidebar.
+    if (action.gatekeeperId === WORKSPACE_PLACEMENT_GATEKEEPER_ID) {
+      if (!this.isOwner) {
+        throw new Error("Only the workspace owner can approve a workspace placement.");
+      }
+      let profile = await this.#getClientProfile();
+      if (!isAdminName(this.impl.env, profile.id)) {
+        throw new Error("Only an admin can approve a workspace placement: it changes the " +
+                        "sidebar for everyone. Reject it, or ask an admin to set it.");
+      }
+      await this.impl.applyWorkspacePlacement(action, profile);
+      return;
+    }
+
+    // Brick: a requestWorkspaceShare request. The owner decides; approval adds the collaborator
+    // through the same path as the Share dialog, which needs this session's sharing authority.
+    if (action.gatekeeperId === WORKSPACE_SHARE_GATEKEEPER_ID) {
+      if (!this.isOwner) {
+        throw new Error("Only the workspace owner can approve sharing the workspace.");
+      }
+      let share = action.workspaceShare;
+      if (!share) throw new Error(`Not a workspace share request: ${action.id}`);
+      let profile = await this.#getClientProfile();
+      let added = await this.addCollaborator(share.email, share.role,
+          "Shared on the workspace agent's request.");
+      if (!added) {
+        throw new Error(`${share.email} has no account on this OS yet: they must sign in once ` +
+                        "before the workspace can be shared with them. Approve again after " +
+                        "they have, or reject the request.");
+      }
+      this.impl.recordWorkspaceShareApproved(action, profile);
+      return;
+    }
+
     // Resolve the approver's identity before applying, so a failed profile fetch can't leave the
     // action applied in the world but still "pending" in storage.
     let profile = await this.#getClientProfile();
@@ -11768,6 +12088,17 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       }
       let profile = await this.#getClientProfile();
       this.impl.rejectScheduleChange(action, profile);
+      return;
+    }
+
+    // Brick: a workspace placement or share request. The owner's decision; rejecting records it.
+    if (action.gatekeeperId === WORKSPACE_PLACEMENT_GATEKEEPER_ID ||
+        action.gatekeeperId === WORKSPACE_SHARE_GATEKEEPER_ID) {
+      if (!this.isOwner) {
+        throw new Error("Only the workspace owner can decide on this request.");
+      }
+      let profile = await this.#getClientProfile();
+      this.impl.rejectWorkspaceRequest(action, profile);
       return;
     }
 

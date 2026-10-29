@@ -1,4 +1,5 @@
-import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AgentScheduleInfo, AgentWorkspaceOutputs, ScheduleChangeKind, ScheduleManualRunResult, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+import { AiChatMessage, AiChatAuthorInfo, AiToolCall, AgentScheduleInfo, AgentWorkspaceInfo, AgentWorkspaceOutputs, CollaboratorRole, ScheduleChangeKind, ScheduleManualRunResult, AiChatMessageBody, AiChatStreamEvent, AlwaysAvailableResource, BlueprintBinding, BlueprintMerge, BlueprintOutput, ChatGadgetPin, ChatGadgetPinRecord, MainlineMergeGadget, WorkpieceId, type AiModelConfig, isTextLikeAttachmentMimeType, validateBindingName } from '@gadgets/workshop-shared/api';
+import { validatePlacement, workspaceUrl } from "./workspace-placements.js";
 import { applyCodeChange, codeChangeSerializedSize, MAX_CODE_CHANGE_SIZE, replaceSpanChange,
   type CodeContent, type CodeChange, type FileChange } from '@gadgets/workshop-shared/code-change';
 import { PDF_MIME_TYPE, modelApiSupportsPdfAttachments } from './chat-attachment-pdf';
@@ -466,6 +467,41 @@ export interface AgentHooks {
       : Promise<{workspaces: AgentWorkspaceOutputs[], truncated?: true}>;
 
   /**
+   * Brick: the initiator's workspaces (owned and shared; provisional ones excluded), with ids, the
+   * one this chat runs in marked `current`, and each one's admin-approved placement. Read-only.
+   */
+  listWorkspaces(initiator: AiChatAuthorInfo)
+      : Promise<{workspaces: AgentWorkspaceInfo[], truncated?: true}>;
+
+  /**
+   * Brick: create a new, empty, listed (never provisional) workspace owned by the initiator,
+   * titled as given (validated by validateWorkspaceTitle). Throws an agent-readable error for a
+   * bad title or an initiator that isn't a signed-in user.
+   */
+  createWorkspace(initiator: AiChatAuthorInfo, title: string): Promise<{id: string, title: string}>;
+
+  /** Brick: rename the workspace this chat runs in, immediately. Returns the title before and after. */
+  renameWorkspace(title: string): Promise<{workspaceId: string, oldTitle: string, title: string}>;
+
+  /**
+   * Brick: queue a request to set a workspace's sidebar group and/or theme: a pending action that
+   * only this workspace's owner, being a deployment admin, can approve. `workspaceId` must be this
+   * workspace or one the initiator owns. Returns the pending one (`alreadyPending`) for a repeat.
+   */
+  requestWorkspacePlacement(chatId: number, initiator: AiChatAuthorInfo,
+                            workspaceId: string | undefined,
+                            placement: {group?: string, theme?: string}, reason: string)
+      : Promise<{workspaceId: string, title: string, actionId: number, alreadyPending: boolean}>;
+
+  /**
+   * Brick: queue a request for the workspace owner to share this workspace with `email` in `role`.
+   * Shares nothing until the owner approves. Returns the pending one (`alreadyPending`) for a
+   * repeat of the same email and role.
+   */
+  requestWorkspaceShare(chatId: number, email: string, role: CollaboratorRole, reason: string)
+      : {actionId: number, alreadyPending: boolean};
+
+  /**
    * Whether the workpiece is a worktree: chat-private, git-rooted, read lazily by path. False
    * for gadgets and for ids that no longer resolve.
    */
@@ -711,6 +747,8 @@ Tools refer to Gadgets by their binding name in your env: the file tools (\`read
 To rename a Gadget, use \`renameGadget\`: it changes the title shown in the gadget's tab and on the Outputs page, immediately. Never rename a Gadget to include the workspace's name. To remove a Gadget, use \`removeGadget\`: it only asks the workspace owner, who must approve before anything is removed, and removal is permanent once approved. Both take the gadget's env name (or, for a gadget with no binding in your env, the workpiece id shown in the gadget list).
 
 Before building a new Gadget, call \`listWorkspaceOutputs\` to see what the user already has in their other workspaces. If something there already does what they asked for, tell them where it is instead of building a duplicate here, unless they ask you to build it anyway.
+
+Workspaces themselves can be managed too. \`listWorkspaces\` lists the user's workspaces with their ids and marks this one. \`createWorkspace\` makes a new, empty workspace in the user's account, listed at once; \`renameWorkspace\` renames this one. Workspace titles follow Category · Action · Contents · Cadence (for example "Capital · Review · Loan Maturities · Monthly") and never start with Mofo, Brick or Back9. A chat started from Home already runs in a new workspace of its own: when the user asks there for a workspace, name this one with \`renameWorkspace\` and build in it rather than creating another. Where a workspace sits in the sidebar (its nav group) and its brand theme are deployment-wide, so \`requestWorkspacePlacement\` only asks the workspace owner, who must be an admin to approve; \`createWorkspace\` takes the same group and theme and queues that request for you. To share this workspace with someone, use \`requestWorkspaceShare\`: it only asks the owner, and nothing is shared until they approve. You can't delete workspaces.
 
 Schedules (hooks that wake a Gadget, such as those registered through the Scheduled Tasks binding) can be inspected with \`listSchedules\`: whether each is enabled, the gadget it wakes, its next run, and how its last run went, including the error when it failed. After registering a schedule, call \`listSchedules\` to confirm it exists and to tell the user it is waiting to be enabled. To enable, disable or delete a schedule, use \`requestScheduleChange\`: it only asks the workspace owner, and nothing changes until they approve. To test an enabled schedule, or to rerun one whose last run failed once you have fixed the cause, use \`runScheduleNow\`.
 
@@ -1280,6 +1318,30 @@ Run an enabled schedule's callback once, now, as if it had fired: the gadget's \
 This doesn't change the schedule itself: its next run, occurrence count and retry state are untouched, and a failed manual run is not retried. Anything the callback writes still goes through the usual approvals.
 
 The result says whether the callback succeeded or failed (with the error), or that it is still running if it took longer than a minute; in that case its outcome shows up later as the schedule's \`lastRun\` in \`listSchedules\`.
+`.trim();
+
+let LIST_WORKSPACES_TOOL_DESCRIPTION = `
+List the user's workspaces: each one's id, title, link, whether the user owns it, and its sidebar group and theme where an admin has set them. The workspace this chat runs in is marked \`current\`. Use it to find a workspace's id for \`requestWorkspacePlacement\`, and to check a workspace doesn't already exist before creating one.
+`.trim();
+
+let CREATE_WORKSPACE_TOOL_DESCRIPTION = `
+Create a new, empty workspace in the user's account. It appears in their workspace list at once, titled as given; the result gives its id and link. Titles follow Category · Action · Contents · Cadence and never start with Mofo, Brick or Back9.
+
+Pass \`group\` (a sidebar group label, such as "Portfolio") and/or \`theme\` to also ask for its placement: that part is a request the workspace owner approves, as with \`requestWorkspacePlacement\`, so say in \`reason\` why it belongs there. Until approved the new workspace is listed outside the groups.
+
+Don't use this to start the work the user asked for in this chat: build here. And don't create a workspace from a chat started on Home just to hold the work; that chat already has its own new workspace (rename it with \`renameWorkspace\`). Check \`listWorkspaces\` first so you don't duplicate one.
+`.trim();
+
+let RENAME_WORKSPACE_TOOL_DESCRIPTION = `
+Rename the workspace this chat runs in. The new title shows in the sidebar and workspace list immediately; no approval is needed. Titles follow Category · Action · Contents · Cadence and never start with Mofo, Brick or Back9.
+`.trim();
+
+let REQUEST_WORKSPACE_PLACEMENT_TOOL_DESCRIPTION = `
+Ask for a workspace's sidebar group and/or brand theme to be set. This doesn't change anything itself: it queues a request that the owner of this workspace decides, and only an admin can approve it, because placement changes the sidebar for everyone. Omit \`workspaceId\` to place this workspace; otherwise give the id of a workspace the user owns (from \`listWorkspaces\`). A group label the sidebar doesn't have yet becomes a new group.
+`.trim();
+
+let REQUEST_WORKSPACE_SHARE_TOOL_DESCRIPTION = `
+Ask the workspace owner to share this workspace with a person, by their sign-in email. Nothing is shared until the owner approves. Role "use" lets them use the gadgets; "build" also lets them chat with you and change the workspace. The person must have signed in to this OS once already; if not, the owner's approval fails and they are told why.
 `.trim();
 
 let LIST_WORKSPACE_OUTPUTS_TOOL_DESCRIPTION = `
@@ -2581,7 +2643,19 @@ async function runAgentPass(
                   }
                   toolOutput = {text: jsonToolResultText(toolCall.output)};
                   break;
+                case "createWorkspace":
+                case "renameWorkspace":
+                case "requestWorkspacePlacement":
+                case "requestWorkspaceShare":
+                  // Like createGadget and removeGadget: the call created, renamed or queued when it
+                  // ran; replay returns the recorded result and never does it again.
+                  if (toolCall.output === undefined) {
+                    throw new Error(`${toolCall.toolName} tool call in log is missing its result`);
+                  }
+                  toolOutput = {text: jsonToolResultText(toolCall.output)};
+                  break;
                 case "listSchedules":
+                case "listWorkspaces":
                 case "listWorkspaceOutputs":
                   // Read-only listings: replay returns what the model saw then, not a fresh
                   // listing, so the replayed context matches the one the turn ran on.
@@ -4087,6 +4161,168 @@ async function runAgentPass(
         try {
           // The initiator's index, not the owner's: it holds only what they can see.
           let output = await hooks.listWorkspaceOutputs(initiator);
+          return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      }
+    }),
+
+    listWorkspaces: defineTool({
+      name: "listWorkspaces",
+      label: "List workspaces",
+      description: LIST_WORKSPACES_TOOL_DESCRIPTION,
+      parameters: Type.Object({}),
+      execute: async (toolCallId) => {
+        try {
+          // The initiator's own listing: only workspaces they own or that are shared with them.
+          let output = await hooks.listWorkspaces(initiator);
+          return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      }
+    }),
+
+    createWorkspace: defineTool({
+      name: "createWorkspace",
+      label: "Create workspace",
+      description: CREATE_WORKSPACE_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        title: Type.String({description: "The workspace's title."}),
+        group: Type.Optional(Type.String({
+          description: "Sidebar group label to request for it, such as \"Portfolio\".",
+        })),
+        theme: Type.Optional(Type.String({
+          description: "Site theme name to request for it, such as \"dual\".",
+        })),
+        reason: Type.Optional(Type.String({
+          description: "Why it belongs in that group or theme. Required with group or theme.",
+        })),
+      }),
+      execute: async (toolCallId, {title, group, theme, reason}) => {
+        try {
+          // Validate the placement before creating, so a bad group never leaves a workspace
+          // behind with no request for it.
+          let wantsPlacement = group !== undefined || theme !== undefined;
+          if (wantsPlacement && !reason?.trim()) {
+            throw new Error("Give a reason with the group or theme; the owner sees it when " +
+                            "deciding.");
+          }
+          if (wantsPlacement) validatePlacement({group, theme});
+          let created = await hooks.createWorkspace(initiator, title);
+          let url = workspaceUrl(created.id);
+          let placement: {actionId: number, status: "pendingOwnerApproval"} | undefined;
+          if (wantsPlacement) {
+            let request = await hooks.requestWorkspacePlacement(
+                chatId, initiator, created.id, {group, theme}, reason!);
+            placement = {actionId: request.actionId, status: "pendingOwnerApproval"};
+          }
+          let output = {
+            workspaceId: created.id,
+            title: created.title,
+            url,
+            ...(placement ? {placement} : {}),
+            message: `Created workspace "${created.title}" (${url}).` + (placement
+                ? " Its sidebar placement is pending the workspace owner's approval."
+                : ""),
+          };
+          return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      }
+    }),
+
+    renameWorkspace: defineTool({
+      name: "renameWorkspace",
+      label: "Rename workspace",
+      description: RENAME_WORKSPACE_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        title: Type.String({description: "The new title for this workspace."}),
+      }),
+      execute: async (toolCallId, {title}) => {
+        try {
+          // Applied now and recorded, so replay never renames again (see renameGadget).
+          let output = await hooks.renameWorkspace(title);
+          return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      }
+    }),
+
+    requestWorkspacePlacement: defineTool({
+      name: "requestWorkspacePlacement",
+      label: "Request workspace placement",
+      description: REQUEST_WORKSPACE_PLACEMENT_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        workspaceId: Type.Optional(Type.String({
+          description: "The workspace to place, from listWorkspaces. Omit for this workspace.",
+        })),
+        group: Type.Optional(Type.String({description: "Sidebar group label."})),
+        theme: Type.Optional(Type.String({description: "Site theme name."})),
+        reason: Type.String({
+          description: "Why, in a sentence or two. Shown to the owner on the approval card.",
+        }),
+      }),
+      execute: async (toolCallId, {workspaceId, group, theme, reason}) => {
+        try {
+          let request = await hooks.requestWorkspacePlacement(
+              chatId, initiator, workspaceId, {group, theme}, reason);
+          let output = {
+            workspaceId: request.workspaceId,
+            title: request.title,
+            actionId: request.actionId,
+            status: "pendingOwnerApproval" as const,
+            ...(request.alreadyPending ? {alreadyPending: true} : {}),
+            message: request.alreadyPending
+                ? `The same placement for "${request.title}" was already waiting for approval, ` +
+                  `so no new request was made.`
+                : `The placement of "${request.title}" is pending the workspace owner's approval ` +
+                  `(an admin). Nothing has changed yet.`,
+          };
+          return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);
+        } catch (error) {
+          toolCallNotes.set(toolCallId, {error: toolErrorText(error)});
+          throw error;
+        }
+      }
+    }),
+
+    requestWorkspaceShare: defineTool({
+      name: "requestWorkspaceShare",
+      label: "Request workspace share",
+      description: REQUEST_WORKSPACE_SHARE_TOOL_DESCRIPTION,
+      parameters: Type.Object({
+        email: Type.String({description: "The person's sign-in email."}),
+        role: Type.Union([Type.Literal("use"), Type.Literal("build")], {
+          description: "\"use\" to use the gadgets; \"build\" to also chat and change things.",
+        }),
+        reason: Type.String({
+          description: "Why, in a sentence or two. Shown to the owner on the approval card.",
+        }),
+      }),
+      execute: async (toolCallId, {email, role, reason}) => {
+        try {
+          let request = hooks.requestWorkspaceShare(chatId, email, role, reason);
+          let normalized = email.trim().toLowerCase();
+          let output = {
+            email: normalized,
+            role,
+            actionId: request.actionId,
+            status: "pendingOwnerApproval" as const,
+            ...(request.alreadyPending ? {alreadyPending: true} : {}),
+            message: request.alreadyPending
+                ? `A request to share this workspace with ${normalized} was already waiting for ` +
+                  `the owner's approval, so no new request was made.`
+                : `The request to share this workspace with ${normalized} (${role}) is pending ` +
+                  `the workspace owner's approval. Nothing is shared yet.`,
+          };
           return toolResult(jsonToolResultText(output), {output} as Partial<AiToolCall>);
         } catch (error) {
           toolCallNotes.set(toolCallId, {error: toolErrorText(error)});

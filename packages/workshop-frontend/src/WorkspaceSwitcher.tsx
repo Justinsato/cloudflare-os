@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { CaretDown, Check, MagnifyingGlass, Star } from '@phosphor-icons/react'
 import { isImeComposing } from './keyboardEvent'
 import { siteConfig, type NavGroup } from './siteConfig'
+import { useSiteConfig } from './useSiteConfig'
 import { workspaceNavList, workspaceNavSections, type NavOrderWorkspace } from './workspaceNavOrder'
 
 // The workspace name in the top bar, as a menu of every workspace the user can open. Picking one
@@ -66,11 +67,12 @@ export default function WorkspaceSwitcher({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [workspaces, currentId, currentTitle])
 
-  const groups = useMemo(() => groupWorkspaces(items, query), [items, query])
+  const navGroups = useSiteConfig().nav?.groups
+  const groups = useMemo(() => groupWorkspaces(items, query, navGroups), [items, query, navGroups])
   const flat = useMemo(() => groups.flatMap(g => g.items), [groups])
 
   const highlightCurrent = (list: readonly WorkspaceSwitcherItem[]) => {
-    const index = groupWorkspaces(list, '').flatMap(g => g.items).findIndex(w => w.id === currentId)
+    const index = groupWorkspaces(list, '', navGroups).flatMap(g => g.items).findIndex(w => w.id === currentId)
     setActiveIndex(Math.max(0, index))
   }
 

@@ -9,6 +9,7 @@ import { isCloudflareLimitsEnabled } from "./ai-gateway-billing/config.js";
 import { getAuthVendorBinding } from "./auth/auth-vendors.js";
 import { readAdminConfig } from "./admin-config.js";
 import { siteLogoImage } from "./site-logo.js";
+import { readWorkspacePlacements } from "./workspace-placements.js";
 
 const logger = createWorkshopLogger("workshop.deployment.config");
 
@@ -43,9 +44,10 @@ export async function getServerConfig(env: Cloudflare.Env): Promise<ServerConfig
   // The admin-config KV get and the per-vendor describe() RPCs are independent — run them
   // concurrently so the KV get isn't serialized ahead of N cross-Worker calls on every (re)connect.
   // (Branding comes from admin-config; auth config is separate and env-driven.)
-  let [config, authVendors] = await Promise.all([
+  let [config, authVendors, placements] = await Promise.all([
     readAdminConfig(env),
     getAuthVendors(env),
+    readWorkspacePlacements(env),
   ]);
   return {
     authVendors,
@@ -59,5 +61,6 @@ export async function getServerConfig(env: Cloudflare.Env): Promise<ServerConfig
     banner: config.banner.text,
     bannerColor: config.banner.color,
     accentColor: config.accentColor,
+    ...(Object.keys(placements).length > 0 ? { workspacePlacements: placements } : {}),
   };
 }

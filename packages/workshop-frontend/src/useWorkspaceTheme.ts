@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { siteConfig } from './siteConfig'
+import { useSiteConfig } from './useSiteConfig'
 
 /**
  * Sets a site-config brand theme as `data-workspace-theme` on <html> while the calling page is open,
@@ -18,5 +18,6 @@ export function useSiteTheme(theme: string | undefined) {
 
 /** The site config's theme for an open workspace. */
 export function useWorkspaceTheme(workspaceId: string | undefined) {
-  useSiteTheme(workspaceId === undefined ? undefined : siteConfig().workspaces?.[workspaceId]?.theme)
+  const workspaces = useSiteConfig().workspaces
+  useSiteTheme(workspaceId === undefined ? undefined : workspaces?.[workspaceId]?.theme)
 }
