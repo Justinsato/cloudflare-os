@@ -1316,7 +1316,8 @@ export default function GadgetEditor() {
       navigate, id])
 
   // ── workpiece picker handlers ───────────────────────────────────────────────────
-  const handleSelectWorkpiece = useCallback((workpieceId: WorkpieceId) => {
+  // `view`, when given, opens the gadget on that view state (a cross-link carrying its filter).
+  const handleSelectWorkpiece = useCallback((workpieceId: WorkpieceId, view?: string) => {
     if (isAgentActive) userPickedWorkpieceThisTurnRef.current = true
     const picked = workpieces.get(workpieceId)
     // Picking a workpiece is a deliberate move to its view, so the turn must not pull the tab
@@ -1332,6 +1333,7 @@ export default function GadgetEditor() {
         ...prev,
         chat: pendingChatId ?? (typeof prev.chat === 'number' ? prev.chat : undefined),
         w: workpieceId,
+        ...(view !== undefined ? { view: gadgetViewParam(workpieceId, view) } : {}),
       }),
     })
   }, [id, navigate, isAgentActive, setWorkspaceVisibility, workpieces, handleTabSelect])
@@ -1354,10 +1356,10 @@ export default function GadgetEditor() {
   }, [id, navigate, selectedGadgetId])
   const selectedGadgetViewState = gadgetViewStateFromParam(viewParam, selectedGadgetId)
 
-  const handleOpenWorkpieceFromGadget = useCallback((target: { id?: number; title?: string }) => {
+  const handleOpenWorkpieceFromGadget = useCallback((target: { id?: number; title?: string; view?: string }) => {
     const match = visibleWorkpieces.find(w => w.id === target.id) ??
         (target.title !== undefined ? visibleWorkpieces.find(w => w.title === target.title) : undefined)
-    if (match) handleSelectWorkpiece(match.id)
+    if (match) handleSelectWorkpiece(match.id, target.view)
   }, [visibleWorkpieces, handleSelectWorkpiece])
 
   const handleRenameWorkpiece = useCallback(async (workpieceId: WorkpieceId, title: string) => {

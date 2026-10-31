@@ -37,7 +37,7 @@ type Props = {
   selectedGadgetId: WorkpieceId | null
   // Use-role subscriptions receive gadgets only (worktrees, like pending gadgets, are withheld).
   gadgets: GadgetSummary[]
-  onSelectGadget: (id: WorkpieceId) => void
+  onSelectGadget: (id: WorkpieceId, view?: string) => void
   // The selected gadget's view state from the URL, and where it reports a new one (see GadgetUI).
   viewState?: string
   onViewStateChange?: (state: string) => void
@@ -165,7 +165,7 @@ export default function GadgetUseView({
             onOpenWorkpiece={target => {
               const match = gadgets.find(g => g.id === target.id) ??
                   (target.title !== undefined ? gadgets.find(g => g.title === target.title) : undefined)
-              if (match) onSelectGadget(match.id)
+              if (match) onSelectGadget(match.id, target.view)
             }}
           />
         ) : (

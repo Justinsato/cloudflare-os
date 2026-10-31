@@ -39,7 +39,7 @@ describe('links between gadgets', () => {
   })
 
   it('opens the target gadget for each supported link form, and leaves other links alone', async () => {
-    const open = vi.fn<(target: { id?: number; title?: string }) => void>()
+    const open = vi.fn<(target: { id?: number; title?: string; view?: string }) => void>()
     const html = [
       '<a data-click href="https://mofohub.com/workspace/abc123?w=7">url</a>',
       '<a data-click href="#w=8">hash</a>',
@@ -52,10 +52,29 @@ describe('links between gadgets', () => {
     })
     await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(4), { timeout: 5000 })
     expect(open.mock.calls.map(c => c[0])).toEqual([
-      { id: 7, title: undefined },
-      { id: 8, title: undefined },
-      { id: 9, title: undefined },
-      { id: undefined, title: 'Tracker · Hold · Materials Receipts · Live' },
+      { id: 7, title: undefined, view: undefined },
+      { id: 8, title: undefined, view: undefined },
+      { id: 9, title: undefined, view: undefined },
+      { id: undefined, title: 'Tracker · Hold · Materials Receipts · Live', view: undefined },
+    ])
+  })
+  it('carries the view state a link names to the gadget it opens', async () => {
+    const open = vi.fn<(target: { id?: number; title?: string; view?: string }) => void>()
+    const html = [
+      '<button data-click data-workpiece-id="51" data-workpiece-view="wo=83196-1">attr</button>',
+      '<a data-click href="#w=20&wo=83196-1&sort=billed">hash</a>',
+      '<a data-click href="https://os.lfiq.app/workspace/abc123?w=18&view=18%3Awo%3D1-1">url</a>',
+      '<a data-click href="https://os.lfiq.app/workspace/abc123?w=18&view=7%3Awo%3D1-1">other gadget view</a>',
+    ].join('')
+    await act(async () => {
+      root.render(<GadgetUI gadget={gadgetWithUi(CLICK_ALL(html))} height="200px" onOpenWorkpiece={open} />)
+    })
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(4), { timeout: 5000 })
+    expect(open.mock.calls.map(c => c[0])).toEqual([
+      { id: 51, title: undefined, view: 'wo=83196-1' },
+      { id: 20, title: undefined, view: 'wo=83196-1&sort=billed' },
+      { id: 18, title: undefined, view: 'wo=1-1' },
+      { id: 18, title: undefined, view: undefined },
     ])
   })
 })

@@ -789,7 +789,7 @@ Every Gadget's \`env\` also contains \`env.WORKSPACE\`, a read-only view of this
 
 ## Linking to other gadgets
 
-A Gadget's UI can open another gadget of the same workspace in place. A click on any element carrying \`data-workpiece-id="<id>"\` (preferred) or \`data-workpiece-title="<title>"\`, or on a link with \`href="#w=<id>"\`, opens that gadget. Always link by id, taken from \`env.WORKSPACE.listGadgets()\`; titles change.
+A Gadget's UI can open another gadget of the same workspace in place. A click on any element carrying \`data-workpiece-id="<id>"\` (preferred) or \`data-workpiece-title="<title>"\`, or on a link with \`href="#w=<id>"\`, opens that gadget. Always link by id, taken from \`env.WORKSPACE.listGadgets()\`; titles change. To open it on a filtered view, add \`data-workpiece-view="<query>"\` (or write the href \`#w=<id>&<query>\`): the target reads that query from \`gadgetView.params\` on load.
 
 ## View state in the URL
 

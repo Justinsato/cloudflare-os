@@ -109,22 +109,28 @@ window.addEventListener('keydown', (event) => {
 // A link to another gadget in this workspace opens it in place. The frame can't navigate the
 // page itself (no allow-top-navigation), so it asks the parent. Recognized: data-workpiece-id or
 // data-workpiece-title on any element, an href "#w=<id>", or a workspace URL carrying "?w=<id>".
+// The link can also open the target on a view state (the query it reads from gadgetView.params):
+// data-workpiece-view="<query>", the rest of "#w=<id>&<query>", or the URL's "view=<id>:<query>".
 window.addEventListener('click', (event) => {
   if (!(event.target instanceof Element)) return;
   const el = event.target.closest('[data-workpiece-id],[data-workpiece-title],a[href]');
   if (!el) return;
   let id = el.getAttribute('data-workpiece-id');
   let title = el.getAttribute('data-workpiece-title');
+  let view = el.getAttribute('data-workpiece-view');
   if (id == null && title == null && el.tagName === 'A') {
     const href = el.getAttribute('href') || '';
-    const hash = /^#w=(\d+)$/.exec(href);
+    const hash = /^#w=(\d+)(?:&(.*))?$/.exec(href);
     if (hash) {
       id = hash[1];
+      if (view == null && hash[2]) view = hash[2];
     } else {
       try {
         const url = new URL(href);
         if (/^\/workspace\/[^/]+\/?$/.test(url.pathname) && /^\d+$/.test(url.searchParams.get('w') || '')) {
           id = url.searchParams.get('w');
+          const saved = url.searchParams.get('view') || '';
+          if (view == null && saved.startsWith(id + ':')) view = saved.slice(id.length + 1);
         }
       } catch {}
     }
@@ -132,7 +138,7 @@ window.addEventListener('click', (event) => {
   if (id == null && title == null) return;
   event.preventDefault();
   event.stopImmediatePropagation();
-  window.parent.postMessage({ type: 'open-workpiece', id: id == null ? undefined : Number(id), title: title ?? undefined }, '*');
+  window.parent.postMessage({ type: 'open-workpiece', id: id == null ? undefined : Number(id), title: title ?? undefined, view: view ?? undefined }, '*');
 }, true);
 
 window.addEventListener('click', (event) => {
@@ -228,7 +234,7 @@ interface GadgetUIProps {
   onNoUiChange?: (showsNoUi: boolean) => void
   // Fires when the gadget asks to open another gadget of this workspace (see the click handler in
   // the injected prefix). Carries an id, a title, or both.
-  onOpenWorkpiece?: (target: { id?: number; title?: string }) => void
+  onOpenWorkpiece?: (target: { id?: number; title?: string; view?: string }) => void
   // The gadget's view state (a query string, see `gadgetView` in the injected prefix) as the page
   // opened with it. Read when the frame loads; later changes come from the gadget itself.
   viewState?: string
@@ -556,7 +562,10 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
       } else if (event.data?.type === 'open-workpiece') {
         const id = Number.isSafeInteger(event.data.id) ? event.data.id as number : undefined
         const title = typeof event.data.title === 'string' ? event.data.title : undefined
-        if (id !== undefined || title !== undefined) onOpenWorkpieceRef.current?.({ id, title })
+        const view = typeof event.data.view === 'string' && event.data.view.length <= MAX_GADGET_VIEW_STATE_LENGTH
+          ? event.data.view
+          : undefined
+        if (id !== undefined || title !== undefined) onOpenWorkpieceRef.current?.({ id, title, view })
       } else if (event.data?.type === 'view-state') {
         const state = event.data.state
         if (typeof state !== 'string' || state.length > MAX_GADGET_VIEW_STATE_LENGTH) return
