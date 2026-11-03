@@ -1,6 +1,6 @@
 import { RpcCompatible, RpcStub, RpcTarget } from "capnweb";
 import { validateRpc } from "capnweb-validate";
-import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, AgentScheduleInfo, AgentWorkspaceInfo, AgentWorkspaceOutputs, HookRunInfo, ScheduleChangeKind, ScheduleManualRunResult, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
+import { Overseer, GadgetMetadata, UiBundle, WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber, GadgetClient, GadgetBindingInfo, GatekeeperClient, ActionLogEntry, ActionsSubscriber, ActionHistoryFilter, ActionHistoryPage, ChatGadgetPinRecord, MainlineMergeGadget, ChatCodeBase, ChatGadgetPinState, CodeChangeSubmission, CommitInfo, FileAtCommit, MAX_READ_FILES_PER_CALL, TreeNode, MergeChangesResult, AiChatMetadata, AiChatMessage, AiChatHistoryPage, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig, AiToolCall, AiChatMessageBody, AgentSpawnerConfig, ConsoleLogSubscriber, ConsoleLogEvent, CapsuleSpecifier, CollaboratorInfo, CollaboratorRole, AffectedCollaborator, ShareLinkInfo, GatekeeperCreationSpec, ObserverConfigCallback, ObserverBindingNeed, ObserverBindingFailure, BlueprintBindingAnnotation, BlueprintBinding, BlueprintMetadata, BlueprintOutput, BlueprintMerge, ApplyBlueprintResult, GadgetUpstream, MessageFormatRef, isOutputIcon, SpawnerEnvTarget, BlueprintGadgetSummary, AiChatStreamEvent, BlueprintScreenshotUpload, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ChatAttachmentUpload, ChatAttachmentHandle, ChatAttachmentRef, BoundHookInfo, WorkspaceTemplate, WorkspaceTemplateBinding, WorkspaceCopyReport, AgentScheduleInfo, AgentWorkspaceInfo, AgentWorkspaceOutputs, HookRunInfo, ScheduleChangeKind, ScheduleManualRunResult, PreApprovableAction, PresenceParticipant, PresenceSubscriber, SlashCommandChoice, SlashCommandRequest, validateBindingName, createOpenGadgetError, OPEN_GADGET_ERROR_CODES, resolveSiteName, modelKind } from '@gadgets/workshop-shared/api'
 import { isAdminName, readWorkspacePlacements, validatePlacement, validateWorkspaceTitle, workspaceUrl, writeWorkspacePlacement } from "./workspace-placements.js";
 import { applyCodeChange, changedGadgets, codeChangeSerializedSize, composeCodeChange,
   MAX_CODE_CHANGE_SIZE, transformCodeChange, validateCodeChangeContent, validateCodeChangeSchema,
@@ -2241,6 +2241,203 @@ class OverseerImpl implements AgentHooks {
       await owner.updateTitle(this.ctx.id.toString(), validated);
     }
     return {workspaceId: this.ctx.id.toString(), oldTitle, title: validated};
+  }
+
+  // Brick: this workspace as a WorkspaceTemplate (see Overseer.exportWorkspaceTemplate). Only
+  // permanent gadgets and edges: a pending one belongs to some chat's unaccepted proposal. A
+  // connection travels as what it reaches (vendor and resource, model, or sibling gadget), never
+  // as its record, which is keyed to the account of whoever made it.
+  async exportTemplate(): Promise<WorkspaceTemplate> {
+    let gadgets = [...this.storage.gadgets.list()].filter(
+        (g): g is GadgetRecord => g.type === "gadget" && !g.pending && g.commitId !== undefined);
+    let order = this.storage.gadgetOrder.get();
+    let rank = (id: WorkpieceId) => {
+      let i = order.indexOf(id);
+      return i < 0 ? order.length + id : i;
+    };
+    gadgets.sort((a, b) => rank(a.id) - rank(b.id));
+    let indexOf = new Map(gadgets.map((g, i) => [g.id, i]));
+
+    let result: WorkspaceTemplate = {
+      title: this.storage.title.get(),
+      gadgets: [],
+      hookCount: [...this.storage.boundHooks.list()].length,
+    };
+    let defaultIndex = this.defaultGadgetId === undefined
+        ? undefined : indexOf.get(this.defaultGadgetId);
+    if (defaultIndex !== undefined) result.defaultGadget = defaultIndex;
+
+    for (let gadget of gadgets) {
+      let files = [...await this.gitStore.readCommitFiles(gadget.commitId!)];
+      let bindings: Record<string, WorkspaceTemplateBinding> = {};
+      for (let [name, edge] of this.visibleBindings(gadget)) {
+        let sibling = indexOf.get(edge.target);
+        if (sibling !== undefined) {
+          bindings[name] = {kind: "gadget", gadget: sibling};
+          continue;
+        }
+        let spec = this.storage.gatekeepers.get(edge.target)?.creationSpec;
+        let gk = this.storage.gatekeepers.get(edge.target);
+        if (!gk || !spec) continue;  // dangling edge, or a connection made before specs existed
+        if (spec.type === "ambient") {
+          bindings[name] = {kind: "ambient", vendorId: spec.vendorId};
+        } else if (spec.type === "gatekeeper") {
+          let resourceUrl = spec.resourceUrl ?? gk.resourceUrl;
+          bindings[name] = {
+            kind: "gatekeeper", vendorId: spec.vendorId, typeUrlPattern: spec.typeUrlPattern,
+            ...(resourceUrl !== undefined ? {resourceUrl} : {}),
+            ...(gk.resourceTitle !== undefined ? {title: gk.resourceTitle} : {}),
+          };
+        } else if (spec.type === "aiModel") {
+          bindings[name] = {kind: "aiModel", modelId: spec.modelId, provider: spec.provider,
+              modelName: spec.modelName};
+        } else {
+          bindings[name] = {kind: "agentSpawner", title: spec.config.displayName};
+        }
+      }
+      result.gadgets.push({
+        title: gadget.title,
+        bindingName: gadget.bindingName,
+        ...(gadget.output ? {output: gadget.output} : {}),
+        files,
+        bindings,
+      });
+    }
+    return result;
+  }
+
+  // Brick: build this freshly initialized workspace's gadgets and connections from `template`
+  // (see AuthenticatedApi.copyWorkspace). Every gadget is born with its code, as a blueprint
+  // instantiation's is; every connection is made on the owner's own accounts. What can't be made
+  // is left unbound and reported, so the owner knows what to connect.
+  async buildFromTemplate(template: WorkspaceTemplate): Promise<WorkspaceCopyReport> {
+    let ownerId = this.ownerId;
+    if (!ownerId) throw new Error("Workspace has no owner.");
+    if ([...this.storage.gadgets.list()].length > 0) {
+      throw new Error("A workspace can only be built from a template while it is empty.");
+    }
+    let owner = () => this.ownerUserDo();
+    let ownerProfile = await retryOnDoReset(() => owner().whoami(), this.logger);
+    let author = commitIdentityForAuthor(ownerProfile);
+
+    // Code first: every permanent gadget is born with a head (see GadgetRecord.commitId).
+    let commits: string[] = [];
+    for (let gadget of template.gadgets) {
+      commits.push(await this.gitStore.writeFilesAsCommit(new Map(gadget.files), {
+        author, timestamp: new Date(), parents: [], message: `Copy gadget: ${gadget.title}`,
+      }));
+    }
+
+    let ids: WorkpieceId[] = [];
+    template.gadgets.forEach((gadget, i) => {
+      let record: GadgetRecord;
+      if (i === template.defaultGadget) {
+        record = this.getGadgetRecord(this.ensureDefaultGadget(commits[i]));
+        record.title = gadget.title;
+      } else {
+        record = this.createGadget(gadget.title, gadget.bindingName, undefined,
+            gadget.output ? {output: gadget.output} : undefined, commits[i], ownerId);
+      }
+      if (gadget.output) record.output = gadget.output;
+      record.upstream = {};
+      this.storage.gadgets.put(record);
+      ids.push(record.id);
+    });
+    this.storage.gadgetOrder.put(ids);
+
+    let report: WorkspaceCopyReport = {
+      gadgets: template.gadgets.map(g => g.title), bound: [], unbound: [],
+      hooksNotCopied: template.hookCount,
+    };
+    // One connection per distinct resource, shared by every gadget that binds it, as in the source.
+    let made = new Map<string, Promise<WorkpieceId>>();
+    let once = (key: string, make: () => Promise<WorkpieceId>) => {
+      let pending = made.get(key);
+      if (!pending) {
+        pending = make();
+        made.set(key, pending);
+      }
+      return pending;
+    };
+    let ambientReady = false;
+
+    for (let [i, gadget] of template.gadgets.entries()) {
+      for (let [name, binding] of Object.entries(gadget.bindings)) {
+        try {
+          let target: WorkpieceId;
+          if (binding.kind === "gadget") {
+            let sibling = ids[binding.gadget];
+            if (sibling === undefined) throw new Error("The gadget it binds was not copied.");
+            target = sibling;
+          } else if (binding.kind === "ambient") {
+            target = await once(`ambient:${binding.vendorId}`, async () => {
+              await retryOnDoReset(
+                  () => owner().provisionAmbientAccount(binding.vendorId), this.logger);
+              if (!ambientReady || !this.#ambientRecord(binding.vendorId)) {
+                await this.ensureAmbientCapsules();
+                ambientReady = true;
+              }
+              let record = this.#ambientRecord(binding.vendorId);
+              if (!record) {
+                throw new Error(`The "${binding.vendorId}" connection isn't available to ` +
+                    `this user.`);
+              }
+              return record.id;
+            });
+          } else if (binding.kind === "gatekeeper") {
+            let resourceUrl = binding.resourceUrl;
+            if (resourceUrl === undefined) {
+              throw new Error("The source connection has no resource to reconnect.");
+            }
+            target = await once(`gatekeeper:${binding.vendorId}:${resourceUrl}`, async () => {
+              let accountIds = await retryOnDoReset(
+                  () => owner().listAccountIdsForVendor(binding.vendorId), this.logger);
+              let lastError: unknown;
+              for (let accountId of accountIds) {
+                try {
+                  let {class: cls, vendorId, typeUrlPattern} =
+                      await owner().getGatekeeperClassFor(accountId, resourceUrl);
+                  let gk = await this.addGatekeeper(
+                      cls, {type: "gatekeeper", vendorId, resourceUrl, typeUrlPattern}, ownerId);
+                  return await gk.getId();
+                } catch (err) {
+                  lastError = err;
+                }
+              }
+              throw lastError instanceof Error ? lastError
+                  : new Error(`No connected ${binding.vendorId} account. Connect one, then bind ` +
+                      `${binding.title ?? resourceUrl}.`);
+            });
+          } else if (binding.kind === "aiModel") {
+            target = await once(`aiModel:${binding.modelId}`, async () => {
+              let chatMeta = await retryOnDoReset(
+                  () => owner().getChatContext(binding.modelId), this.logger);
+              if (!chatMeta.aiModel) {
+                throw new Error(`No AI model "${binding.modelId}" is configured for this user.`);
+              }
+              let gk = await this.addAiModelGatekeeper(chatMeta, binding.modelId, ownerId);
+              return await gk.getId();
+            });
+          } else {
+            throw new Error(`Agent spawner "${binding.title}" is not copied; ask the agent to ` +
+                `set it up again.`);
+          }
+          this.bindWorkpiece(ids[i], name, target);
+          report.bound.push({gadget: gadget.title, binding: name, kind: binding.kind});
+        } catch (err) {
+          report.unbound.push({gadget: gadget.title, binding: name,
+              reason: err instanceof Error ? err.message : String(err)});
+        }
+      }
+    }
+
+    this.logger.info("workspace built from template", {event: "workspace.copy.built"});
+    return report;
+  }
+
+  #ambientRecord(vendorId: string): GatekeeperRecord | undefined {
+    return [...this.storage.gatekeepers.list()].find(gk =>
+        gk.creationSpec?.type === "ambient" && gk.creationSpec.vendorId === vendorId);
   }
 
   // Brick: the agent's requestWorkspacePlacement tool. Queues a pending action under the
@@ -5712,6 +5909,32 @@ class OverseerImpl implements AgentHooks {
   // `joinAs` counts the returned client toward #hasCollaboratorSession for its lifetime; passed by
   // the collaborator-facing mints, omitted for the owner's and for internal callers (see
   // GadgetClientImpl). `actorUserId` is who the returned client acts for, for analytics only.
+  // An AI model connection on the model `chatMeta` resolved for `modelId` (see
+  // Overseer.newAiModelGatekeeper; also a workspace copy's, for the new owner's model).
+  async addAiModelGatekeeper(
+      chatMeta: UserChatContext, modelId: string, actorUserId: string, joinAs?: SessionKind)
+      : Promise<GatekeeperClient<any>> {
+    let props: AiModelGatekeeperProps = {
+      displayName: chatMeta.aiModel!.profile.name,
+      config: chatMeta.aiModel!.config,
+      initiator: this.gadgetAuthorFor(chatMeta.profile),
+      metadata: { source: "model-binding", gadgetId: this.ctx.id.toString() },
+    }
+
+    let creationSpec: GatekeeperCreationSpec = {
+      type: "aiModel",
+      modelId,
+      provider: chatMeta.aiModel!.config.provider,
+      modelName: chatMeta.aiModel!.config.model,
+    };
+
+    return await this.addGatekeeper(
+        modelKind(props.config.provider, props.config.model) === "decision"
+            ? this.ctx.exports.DecisionModelGatekeeper({props})
+            : this.ctx.exports.LanguageModelGatekeeper({props}),
+        creationSpec, actorUserId, joinAs);
+  }
+
   async addGatekeeper(
       cls: GatekeeperClass, creationSpec: GatekeeperCreationSpec, actorUserId: string,
       joinAs?: SessionKind)
@@ -10446,6 +10669,22 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
+   * Brick: initialize a workspace just registered with its owner, as initializeOwnedWorkspace()
+   * does, and build its gadgets and connections from `template` (AuthenticatedApi.copyWorkspace).
+   * Reachable only from a Worker binding the Overseer namespace; no client RPC exposes it. The
+   * owner check refuses a workspace already initialized, so it can't take one over.
+   */
+  async initializeFromTemplate(ownerUserId: string, title: string, template: WorkspaceTemplate)
+      : Promise<WorkspaceCopyReport> {
+    await this.initializeOwnedWorkspace(ownerUserId, title);
+    let report = await this.impl.buildFromTemplate(template);
+    let owner = this.impl.ownerUserDo();
+    // Listed at once, like a workspace the agent or the portal creates (see createWorkspace).
+    await owner.setGadgetLastActive(this.ctx.id.toString(), new Date(), undefined);
+    return report;
+  }
+
+  /**
    * This workspace's outputs, for the owner to fold into their index. Every registry change and
    * every owner open already pushes, so this exists only to catch up workspaces that predate the
    * index. Null unless the caller really is the owner, so nobody else can read the snapshot.
@@ -11736,25 +11975,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   async newAiModelGatekeeper(modelId: string): Promise<GatekeeperClient<any>> {
     let chatMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(modelId), this.impl.logger);
-    let props: AiModelGatekeeperProps = {
-      displayName: chatMeta.aiModel!.profile.name,
-      config: chatMeta.aiModel!.config,
-      initiator: this.impl.gadgetAuthorFor(chatMeta.profile),
-      metadata: { source: "model-binding", gadgetId: this.impl.ctx.id.toString() },
-    }
-
-    let creationSpec: GatekeeperCreationSpec = {
-      type: "aiModel",
-      modelId,
-      provider: chatMeta.aiModel!.config.provider,
-      modelName: chatMeta.aiModel!.config.model,
-    };
-
-    let result = await this.impl.addGatekeeper(
-        modelKind(props.config.provider, props.config.model) === "decision"
-            ? this.impl.ctx.exports.DecisionModelGatekeeper({props})
-            : this.impl.ctx.exports.LanguageModelGatekeeper({props}),
-        creationSpec, this.clientUserId, this.#mintedCapabilityKind());
+    let result = await this.impl.addAiModelGatekeeper(
+        chatMeta, modelId, this.clientUserId, this.#mintedCapabilityKind());
     await this.recordConnectionCreated(result, "ai_model");
     return result;
   }
@@ -12913,6 +13135,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   // The sharing/permission logic lives in SharingManager (./sharing). These methods handle only
   // the RPC-bound pieces (resolving profiles via User DOs) and delegate the rest.
 
+  async exportWorkspaceTemplate(): Promise<WorkspaceTemplate> {
+    return await this.impl.exportTemplate();
+  }
+
   async listObserverRequirements(
       role: CollaboratorRole): Promise<ObserverBindingNeed[]> {
     return this.impl.listObserverRequirements(role);
@@ -13327,6 +13553,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   }): Promise<void> { this.#deny(); }
   async deleteBlueprint(_blueprintId: string): Promise<void> { this.#deny(); }
   async retryBlueprintPublish(_blueprintId: string): Promise<void> { this.#deny(); }
+  async exportWorkspaceTemplate(): Promise<WorkspaceTemplate> { this.#deny(); }
   async listObserverRequirements(
       _role: CollaboratorRole): Promise<ObserverBindingNeed[]> { this.#deny(); }
   async listCollaborators(): Promise<CollaboratorInfo[]> { this.#deny(); }
