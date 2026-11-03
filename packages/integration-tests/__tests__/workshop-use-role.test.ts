@@ -141,6 +141,7 @@ const DENIED_OVERSEER: Record<Exclude<keyof Overseer, keyof RpcTarget | UseSurfa
   updateBlueprint: ws => ws.updateBlueprint("blueprint", { title: "Title" }),
   deleteBlueprint: ws => ws.deleteBlueprint("blueprint"),
   retryBlueprintPublish: ws => ws.retryBlueprintPublish("blueprint"),
+  exportWorkspaceTemplate: ws => ws.exportWorkspaceTemplate(),
   listObserverRequirements: ws => ws.listObserverRequirements("build"),
   listCollaborators: ws => ws.listCollaborators(),
   addCollaborator: ws => ws.addCollaborator("someone", "build"),
