@@ -95,7 +95,7 @@ it("copies a workspace for its owner, its build collaborators, and (as an admin)
   expect(copy.id).not.toBe(sourceId);
   expect((await owner.listWorkspaces()).map(w => w.id)).toContain(copy.id);
   {
-    using copied = await owner.openGadget(copy.id);
+    using copied = await owner.openWorkspace(copy.id);
     expect(await uiOf(copied, "Rent Roll")).toBe(APP_UI);
   }
 
@@ -107,7 +107,7 @@ it("copies a workspace for its owner, its build collaborators, and (as an admin)
   using strangerPublic = connect(requireHarness().url);
   using stranger = await signUp(strangerPublic, strangerName!);
   {
-    using source = await owner.openGadget(sourceId);
+    using source = await owner.openWorkspace(sourceId);
     expect(await source.addCollaborator(buildName!, "build")).not.toBeNull();
     expect(await source.addCollaborator(useName!, "use")).not.toBeNull();
   }
@@ -123,7 +123,7 @@ it("copies a workspace for its owner, its build collaborators, and (as an admin)
   using adminPublic = connect(requireHarness().url);
   using admin = await signUp(adminPublic, ADMIN_USERNAME);
   {
-    using source = await owner.openGadget(sourceId);
+    using source = await owner.openWorkspace(sourceId);
     expect(await source.addCollaborator(ADMIN_USERNAME, "build")).not.toBeNull();
   }
   await expect(admin.copyWorkspace(sourceId, { forUser: newName }))
@@ -134,7 +134,7 @@ it("copies a workspace for its owner, its build collaborators, and (as an admin)
   expect((await newHire.listWorkspaces()).map(w => w.id)).toContain(forNewHire.id);
   expect((await admin.listWorkspaces()).map(w => w.id)).not.toContain(forNewHire.id);
   {
-    using copied = await newHire.openGadget(forNewHire.id);
+    using copied = await newHire.openWorkspace(forNewHire.id);
     expect((await copied.getMetadata()).owner).toBeUndefined();
     expect(await uiOf(copied, "Rent Roll")).toBe(APP_UI);
   }
