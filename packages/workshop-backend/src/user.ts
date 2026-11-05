@@ -2216,6 +2216,20 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     await this.#armExpirySweep();
   }
 
+  /**
+   * Brick: this user's live connected accounts of `vendorId`, oldest first, for a workspace copy
+   * to rebuild a connection on (see OverseerImpl.buildFromTemplate). Ids only: the account
+   * capability stays in this DO.
+   */
+  async listAccountIdsForVendor(vendorId: string): Promise<number[]> {
+    let normalized = vendorId.toLowerCase();
+    return [...this.storage.connectedAccounts.list()]
+        .filter(account => account.vendorId.toLowerCase() === normalized &&
+            !account.credentialsExpired)
+        .map(account => account.id)
+        .toSorted((a, b) => a - b);
+  }
+
   async getGatekeeperClassFor(accountId: number, url: string)
       : Promise<{class: DurableObjectClass<Gatekeeper<any>>, vendorId: string,
                   typeUrlPattern: string}> {

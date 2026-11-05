@@ -733,6 +733,20 @@ export interface AuthenticatedApi extends RpcTarget {
   setWorkspacePlacement(workspaceId: string, placement: WorkspacePlacement | null): Promise<void>;
 
   /**
+   * Brick: copy the workspace `sourceId` into a new workspace and return its id, title and what
+   * was and wasn't carried over (see WorkspaceCopyReport). The caller needs build access to the
+   * source. The copy has every gadget's committed code, title, format and gadget-to-gadget
+   * binding; its connections are rebuilt on the new owner's own accounts, never shared from the
+   * source. Gadget data, chats and hooks are not copied. The copy keeps the source's sidebar
+   * placement.
+   *
+   * `options.title` defaults to the source's title. `options.forUser` (admins only) makes the
+   * copy in that user's account instead of the caller's; the user must have signed in once.
+   */
+  copyWorkspace(sourceId: string, options?: {title?: string, forUser?: string})
+      : Promise<{id: string, title: string, report: WorkspaceCopyReport}>;
+
+  /**
    * List the outputs of all the user's workspaces. Used to display the Outputs page, which lets
    * the user find things they made without remembering which workspace they made them in.
    *
@@ -1738,6 +1752,52 @@ export type ServerConfig = {
 export type WorkspacePlacement = {
   group?: string;
   theme?: string;
+};
+
+/**
+ * Brick: one binding of a WorkspaceTemplateGadget, by what it reaches rather than by workpiece id
+ * (ids are workspace-local). A copy rebuilds each one in the new workspace: a gadget edge points
+ * at the copy of that gadget, an ambient or account connection is made on the new owner's own
+ * account, and an AI model connection on their model of that id.
+ */
+export type WorkspaceTemplateBinding =
+  | {kind: "gadget", gadget: number}  // index into WorkspaceTemplate.gadgets
+  | {kind: "ambient", vendorId: string}
+  | {kind: "gatekeeper", vendorId: string, resourceUrl?: string, typeUrlPattern: string,
+     title?: string}
+  | {kind: "aiModel", modelId: string, provider: string, modelName: string}
+  | {kind: "agentSpawner", title: string};
+
+/** Brick: a gadget as WorkspaceTemplate carries it: its committed files and its bindings. */
+export type WorkspaceTemplateGadget = {
+  title: string;
+  bindingName: string;
+  output?: BlueprintOutput;
+  /** [path, content] pairs: a list rather than an object, so no filename can be a prototype key. */
+  files: [string, string][];
+  bindings: Record<string, WorkspaceTemplateBinding>;
+};
+
+/**
+ * Brick: what Overseer.exportWorkspaceTemplate() returns and a copy is built from. Gadgets are in
+ * the source's display order.
+ */
+export type WorkspaceTemplate = {
+  title: string;
+  gadgets: WorkspaceTemplateGadget[];
+  /** Index of the source's default gadget (the one bound as GADGET), if it has one. */
+  defaultGadget?: number;
+  /** Hooks (schedules, triggers) the source has. They are not copied. */
+  hookCount: number;
+};
+
+/** Brick: what a workspace copy carried over, binding by binding. */
+export type WorkspaceCopyReport = {
+  gadgets: string[];
+  bound: {gadget: string, binding: string, kind: WorkspaceTemplateBinding["kind"]}[];
+  /** Bindings the copy could not rebuild, each with the reason, for the new owner to connect. */
+  unbound: {gadget: string, binding: string, reason: string}[];
+  hooksNotCopied: number;
 };
 
 /**
@@ -3506,6 +3566,12 @@ export interface Overseer extends RpcTarget {
    * the order the connections were created. Reports what sharing will cost the recipient; it
    * grants nothing and mints no capability.
    */
+  /**
+   * Brick: this workspace as a WorkspaceTemplate, for AuthenticatedApi.copyWorkspace(). Build role
+   * only. Permanent gadgets and edges only: a chat's unaccepted proposals are not part of it.
+   */
+  exportWorkspaceTemplate(): Promise<WorkspaceTemplate>;
+
   listObserverRequirements(role: CollaboratorRole): Promise<ObserverBindingNeed[]>;
 
   /** List all collaborators. Available to owner and all collaborators. */

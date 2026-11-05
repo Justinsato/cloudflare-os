@@ -1,7 +1,7 @@
 import { RpcStub, RpcTarget, newHttpBatchRpcResponse, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
-import { PublicApi, WorkspacePlacement, ROUTER_TAG_PROBE_PATH, VERSION_PATH, AuthenticatedApi, Overseer, WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenWorkspaceError, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute, WebPushSubscription } from '@gadgets/workshop-shared/api';
+import { PublicApi, WorkspacePlacement, ROUTER_TAG_PROBE_PATH, VERSION_PATH, AuthenticatedApi, Overseer, WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenWorkspaceError, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute, WebPushSubscription, WorkspaceCopyReport } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
 import { backendVersion, getServerConfig } from "./deployment-config.js";
 import { isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
@@ -396,6 +396,61 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     }
     await writeWorkspacePlacement(this.env, workspaceId,
         placement === null ? null : validatePlacement(placement));
+  }
+
+  async copyWorkspace(sourceId: string, options: {title?: string, forUser?: string} = {})
+      : Promise<{id: string, title: string, report: WorkspaceCopyReport}> {
+    if (typeof sourceId !== "string" || !/^[0-9a-f]{64}$/.test(sourceId)) {
+      throw new Error("Not a workspace id.");
+    }
+
+    // Who gets the copy: the caller, or (admins only) a user who has signed in at least once.
+    let ownerId = this.#userId;
+    if (options.forUser !== undefined) {
+      if (!this.#isAdmin()) {
+        throw new Error("Only an admin can copy a workspace into another user's account.");
+      }
+      // Users are keyed by their sign-in name: the Access email on a Brick deployment.
+      let username = options.forUser.trim().toLowerCase();
+      if (!/^\S+$/.test(username)) {
+        throw new Error("forUser must be the user's sign-in email or username.");
+      }
+      ownerId = this.users.idFromName(username);
+      let profile = await retryOnDoReset(() => this.users.get(ownerId).whoamiIfExists());
+      if (!profile) {
+        throw new Error(`${username} has not signed in to this OS yet. A copy can be made once ` +
+            `they have signed in once.`);
+      }
+    }
+
+    // Read the source through an ordinary open, so the caller's own access is what's checked.
+    // A "use" collaborator's workspace refuses exportWorkspaceTemplate().
+    let source = await this.openWorkspace(sourceId);
+    let template;
+    try {
+      template = await source.exportWorkspaceTemplate();
+    } finally {
+      source[Symbol.dispose]();
+    }
+
+    let title = validateWorkspaceTitle(options.title ?? template.title);
+    let id = this.overseers.newUniqueId().toString();
+    let owner = this.users.get(ownerId);
+    await owner.newWorkspace(id, title);
+    let report = await this.overseers.get(this.overseers.idFromString(id))
+        .initializeFromTemplate(ownerId.toString(), title, template);
+
+    // The copy sits where the source does in the sidebar.
+    let placement = (await readWorkspacePlacements(this.env))[sourceId];
+    if (placement) await writeWorkspacePlacement(this.env, id, placement);
+
+    recordAnalytics(this.ctx, this.env, {
+      event_name: "gadget_created",
+      user_id: ownerId.toString(),
+      gadget_id: id,
+      source: "blank",
+    });
+    return {id, title, report};
   }
 
   listOutputs(): Promise<ListOutputsResult> {
@@ -956,6 +1011,12 @@ class OperatorSession extends NativeRpcTarget {
   /** As AuthenticatedApi.createWorkspace(): a listed (never provisional) workspace. */
   createWorkspace(title: string): Promise<{id: string, title: string}> {
     return this.#api.createWorkspace(title);
+  }
+
+  /** As AuthenticatedApi.copyWorkspace(); `forUser` needs the operator to be an admin. */
+  copyWorkspace(sourceId: string, options?: {title?: string, forUser?: string})
+      : Promise<{id: string, title: string, report: WorkspaceCopyReport}> {
+    return this.#api.copyWorkspace(sourceId, options);
   }
 
   /** As AuthenticatedApi.setWorkspacePlacement(); the operator must be an admin. */
