@@ -34,7 +34,8 @@ The mechanism is a per-user, gatekeeper-mediated check — "this data may be sha
 people who *also* have access to it". (Maximally sensitive data gets an extra layer: an
 observation marked **`containsRestrictedData`**
 (`ObservationDescription.containsRestrictedData` in `packages/workshop-shared/src/gatekeeper.ts`)
-puts the workspace into a restricted mode — no web fetches, and every action requires manual
+puts the workspace into a restricted mode — web fetches reach only the hosts an admin trusts with
+that data (`AdminConfig.restrictedWebFetchHosts`, none by default), and every action requires manual
 approval (auto-approval rules are suspended), the approver checking the action text for restricted
 data. An action whose description is not complete (`ActionDescription.descriptionIsComplete`)
 is accepted and flagged to the approver; only git pushes are refused. Its coverage rests on admission: nobody can open the workspace without being verified
@@ -104,7 +105,7 @@ The check works as follows:
 | Overseer DO, `open()` auth entry point | `packages/workshop-backend/src/overseer.ts` |
 | Authorization gate shared by `open()` and `receiveExternalMessage()` | `overseer.ts` `authorizeCollaborator()` |
 | Session restart when verification scope widens | `overseer.ts` (`#restartIfSessionsAffected`, `joinSession`, `scheduleAccessRestart`) |
-| Server `openGadget` path | `packages/workshop-backend/src/server.ts` |
+| Server `openWorkspace` path | `packages/workshop-backend/src/server.ts` |
 | Role resolution / permission graph | `packages/workshop-backend/src/sharing.ts` (`getEffectiveRole`, `computeEffectiveRoles`) |
 | `containsRestrictedData` enforcement | `overseer.ts` (`authorizeObservation` sets `containsRestrictedData`; `getWebFetchEnv`, `submitAction`) |
 | `ownerInvitesOnly` enforcement | `overseer.ts` (`authorizeObservation` sets `ownerInvitesOnly` and restarts the workspace if anyone lost access); `sharing.ts` (`computeEffectiveRoles` counts only direct owner grants; the `ownerInvitesOnly` hook in `redeemShareKey`, `addCollaborator`, `createShareLink`, `newShareLinkKey`) |
@@ -202,7 +203,7 @@ legitimate UI state).
 > awaiting it (see the Cap'n Web note in `AGENTS.md`). The observer-open path awaits it because a
 > null result means the account must be re-selected before calling `addObserver()`.
 
-### Step 2 — Client-server API: a configuration callback on `open` / `openGadget`
+### Step 2 — Client-server API: a configuration callback on `open` / `openWorkspace`
 
 We must avoid structured/typed errors for control flow (prohibited in this codebase) and must not
 break promise pipelining in the common case. So `open()` gains an **optional callback** that is
@@ -211,7 +212,7 @@ invoked **only** when the opening user needs to configure gatekeeper accounts. I
 without an extra round trip.
 
 Add to the RPC API (`packages/workshop-shared/src/api.ts`) and thread through
-`server.ts` `openGadget` → `overseer.open()`:
+`server.ts` `openWorkspace` → `overseer.open()`:
 
 ```ts
 // Provided by the client when opening a gadget. Invoked by the overseer only if the opening
@@ -236,7 +237,7 @@ type ObserverAccountChoice = {
 
 `open()` signature gains `configureObservers?: RpcStub<ObserverConfigCallback>`.
 
-(Same goes for `openGadget()`, which is the public-facing API method on `AuthenticatedApi`.)
+(Same goes for `openWorkspace()`, which is the public-facing API method on `AuthenticatedApi`.)
 
 ### Step 3 — Overseer: observer configuration & re-verification at `open()`
 
@@ -345,8 +346,9 @@ Notes:
 
 #### Restarting when verification scope widens
 
-Verification runs at `open()` and nowhere else, so a live session is only ever as verified as the
-scope that existed when it opened. When that scope **widens**, the overseer restarts the workspace
+Per-connection verification runs only at `open()` (only reads that report `subresources` are also
+checked as they happen, see §10), so a live session is only ever as verified as the scope that
+existed when it opened. When that scope **widens**, the overseer restarts the workspace
 rather than trying to re-verify sessions in place: `#restartIfSessionsAffected(reason,
 affectedRole?)` delegates to `scheduleAccessRestart(reason)` — the same DO abort used to revoke a
 collaborator (see `docs/sharing.md`) — so every client's browser reconnects and re-runs
@@ -412,29 +414,32 @@ gadget-minted children alike:
   only after authorization (verification itself is covered by `authorizeCollaborator`'s internal
   lease): a caller who is turned away must never have counted, or a stranger racing an
   `addGatekeeper()` would cause a needless workspace reset.
-- **Known gap — the agent turn an external message starts** outlives that RPC's lease (it is
-  fire-and-forget, and its persisted `ActiveAgentRecord` even survives DO resets, resuming with
-  no re-verification), so a widening mid-turn finds no session to sever and the reply egresses
-  to the persisted external response target under stale verification. Tolerated only because
-  nothing calls `receiveExternalMessage` yet; the required fix (a per-turn `build` lease from
-  `#registerRunningAgent` to `#unregisterRunningAgent`, persisted as a marker on
-  `ActiveAgentRecord`, plus `authorizeCollaborator` re-run on resume with the turn cancelled on
-  denial) is spelled out in the comment at the endpoint and must land before it gets real
-  callers. Owner and UI-collaborator turns are not affected: the owner is never an observer, a
-  UI collaborator's replies land in the chat log behind re-verified opens, and gadget-callback
-  turns have no external egress.
+- **Resumed person-initiated turns** re-run `authorizeCollaborator` with `requireRole: "build"`
+  for the original non-owner initiator before inference, and hold a `build` lease through the
+  resumed turn. This applies after a DO reset and after a decision pause. Denial ends the turn
+  with an error; a later approver cannot lend it their authority.
+- **Known gap — a freshly started external-message turn** outlives that RPC's lease because it
+  is fire-and-forget. Before its first reset or decision pause, a widening can therefore find
+  no session to sever, and its reply can egress to the persisted external response target under
+  stale verification. The resumed path above is covered, but the initial run still needs its
+  own per-turn `build` lease before `receiveExternalMessage` gets real callers. No extra durable
+  marker is needed for that resume check: the existing `ActiveAgentRecord` retains the original
+  initiator. Owner and UI-collaborator turns are not affected by this external-egress gap: the
+  owner is never an observer, and a UI collaborator reads replies through re-verified opens.
 
   The same mechanism has a spawner variant: a `use` collaborator holding a bound spawner's
   loopback can start a spawn during the window between a widening's restart being scheduled and
   the reset landing (`spawnAgent` checks no quarantine, and the spawner itself is vendorless so
   it is never the thing quarantined). The spawn persists an `ActiveAgentRecord` that the reset's
-  storage sync commits, and the resumed turn re-runs no authorization — so it completes with its
-  creator's authority against the pre-widening scope. Bounded, unlike the external-message case:
+  storage sync commits. Its initiator is a gadget, so the person-initiated resume check above does
+  not apply: it can complete with its creator's authority against the pre-widening scope.
+  Bounded, unlike the external-message case:
   the resumed turn has no external egress, its output lands in workspace state, and every
   `use`-role reader of that state re-verifies at their next open against the now-widened scope —
   so the only unverified consumption is inside the restart's own delivery window, which the
-  design already tolerates for sessions the reset is about to sever. The per-turn-lease fix
-  above (re-run `authorizeCollaborator` on resume, cancel on denial) closes this variant too.
+  design already tolerates for sessions the reset is about to sever. Closing this variant still
+  needs lifecycle authorization for gadget-authored turns; re-checking person-initiated resumes
+  alone does not cover it.
 
 Five events trigger it:
 
@@ -676,9 +681,9 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
    at every `open()`, so nobody can be in the workspace without having passed the producing
    gatekeeper's `addObserver()`, and anything that widens what they must pass restarts every live
    session (see "Restarting when verification scope widens"). Setting `containsRestrictedData` also
-   puts the workspace into a restricted mode: no web fetches, and every action requires manual
-   approval (auto-approval rules are suspended), the approver checking the action text for
-   restricted data. An action whose description is not complete
+   puts the workspace into a restricted mode: web fetches reach only the hosts an admin trusts with
+   that data, and every action requires manual approval (auto-approval rules are suspended), the
+   approver checking the action text for restricted data. An action whose description is not complete
    (`ActionDescription.descriptionIsComplete`) is accepted and flagged to the approver; only git
    pushes are refused.
    Verification is held to each collaborator's own role scope, because `ensureObserver` can
@@ -757,7 +762,7 @@ already in the JSDoc in `gatekeeper.ts`; add anything missing there rather than 
 
 1. **Data model + User DO** — add the `observers` collection (Step in §4) and `User.getVerifier`
    (Step 1).
-2. **API plumbing** — `ObserverConfigCallback` + `open()`/`openGadget()` signature (Step 2).
+2. **API plumbing** — `ObserverConfigCallback` + `open()`/`openWorkspace()` signature (Step 2).
 3. **Overseer enforcement** — `ensureObserver` and the `open()` hook (Step 3). Land with a
    temporary "deny if `configureCb` absent / any uncovered binding" path so server logic can be
    tested before the UI exists.
@@ -787,10 +792,10 @@ its resource types.
 
 - **A — Private-only.** Non-owner observers are refused: `addObserver()` unconditionally throws.
   For data that must additionally never leak back out, the `containsRestrictedData` restricted
-  mode (no web fetches, and every action requires manual approval — auto-approval rules are
-  suspended — the approver checking the action text for restricted data) is available separately;
-  combined with strategy A it makes the workspace effectively private once sensitive data is
-  observed.
+  mode (web fetches reach only admin-trusted hosts, and every action requires manual approval —
+  auto-approval rules are suspended — the approver checking the action text for restricted data) is
+  available separately; combined with strategy A it makes the workspace effectively private once
+  sensitive data is observed.
   `getVerifier()` must still exist (the overseer mints one on every open) but is never consulted.
 
 - **B — ACL check (single unit).** The resource is treated as one atomic unit.
@@ -846,9 +851,12 @@ its resource types.
 | **confluence** | Space | **C** | Verify space access; track observed pages and blog posts because content restrictions may be narrower. |
 | **confluence** | Page / Blog Post | **C** | Verify bound-content access; track observed child pages because they may have stricter restrictions than their parent. |
 | **zoominfo** | Account | **A** | Always throw. The whole-account binding exposes licensed, entitlement-dependent and account-specific intelligence, and ZoomInfo provides no ACL oracle proving another account can read every historical result. |
-| **context** | Context Library singleton | **C** | Track collections whose contents a read revealed (search results, a collection's listing, a document); verify each is public in the sharing domain or privately owned by the observer's Context account. Uses the kit's default observer cap to bound per-read verifier fanout. The top-level collection listing tracks nothing: its titles, descriptions and counts are discovery metadata the agent catalog already advertises unobserved. The denial never names the collection, which the refused collaborator cannot read. |
+| **context** | Context Library singleton | **C**, kernel-checked (§10) | Every read reports the collections whose contents it revealed (search results, a collection's listing, a document) as `subresources`, one collection ID each; `verifyObserverAccess` (the kit's `observerAccessVerifier`) allows an observer only if their Context account can read every one now, in the binding's sharing domain: public, everyone-viewable, or granted to it as viewer, editor, or owner. The top-level collection listing reports `[]`: its titles, descriptions and counts are discovery metadata the agent catalog already advertises unobserved. `addObserver` keeps the kit tracker, which reads no longer feed, so it enforces only the collections reads revealed before they reported them, with the same oracle. Neither denial names the collection, which the refused collaborator cannot read. |
 | **x** | Account | **C** | Admit any observer with a working X connection: public posts, profiles, public Lists and follow graphs need only an X account. Reads private to the account -- bookmarks, likes, mute state, private Lists, and any page holding a protected account's post -- authorize against one synthetic `owner` collection, which admits only an observer connected as the same X user. |
 | **x** | Post / List | **C** | As Account, plus a check on every open that the observer's own X account can see the bound post or List (`canViewPost` / `canViewList`). Each check is a read billed to the observer's connection, so a passed check is trusted for an hour; a failed one never is. |
+| **microsoft** | SharePoint (all, site, library, folder, file, list, page) | **C** | Track every object a read revealed as a unit (`sharepoint-observers.ts`), since SharePoint breaks inheritance at any level and one container's ACL never vouches for its contents; verify each by probing it with the observer's own token, twenty to a `$batch`, where 403 and 404 both mean no access. A file's content and its version history are their own units, since someone may see a file they can't open; a draft the owner read pins its version, and the probe passes only if the observer is shown the same one. |
+| **microsoft** | Outlook Mailbox / Folder / Conversation / Sender | **C** | Track the mailbox, folders and messages each read revealed (`outlook-observers.ts`); verify each by a probe `GET` as the observer: the whole mailbox needs access to all of it (someone shared one folder gets 404), a folder or message needs that folder or message. |
+| **microsoft** | Outlook Calendar / Availability | **C** | Track calendar units at the detail level each read revealed (`calendar-observers.ts`): a calendar unit admits an observer only when the owner's `calendarPermissions` give them a role that sees that level (`calendar-acl.ts`, where a group entry can only lower the organization default), which only the owner can read, so a unit of someone else's calendar admits that owner alone; an `availability:<address>` unit only when `getSchedule` as the observer answers for that address; the all-calendars unit admits nobody but the owner. |
 | **x** | Profile | **C** | As Account: a public profile needs only an X account, and the `owner` collection covers a protected user's posts. Accepted over-permissiveness for every X binding: an author who has blocked the observer is still readable through the gadget, since checking each author per observer per read would cost a read each and what leaks is public. |
 
 ### 9.3 The "broad binding" lens
@@ -866,7 +874,8 @@ This is why the broad bindings split the way they do:
 
 - **Satisfy both → C:** Supabase Org (projects + `listProjects()` oracle), Linear Workspace
   (teams + membership), Notion Workspace (pages + page access), BigQuery (datasets + IAM), Context
-  Library (public/private collections + account/domain ownership checks).
+  Library (per-collection access checks scoped to the observer's account and sharing domain: public,
+  everyone-viewable, or an explicit viewer/editor/owner grant).
 - **Fail criterion 1 → B:** GitHub Repository — issues/PRs/discussions/code all inherit the single
   repo permission, and there is no binding broader than one repo, so the repo is the atomic ACL
   unit.
@@ -881,6 +890,104 @@ This is why the broad bindings split the way they do:
   reaches the owner's direct messages, where "can this collaborator open it too" has no useful
   answer, and one stray DM read under C would lock the workspace for everyone anyway. Sharing is
   done by binding a single conversation, which is the B row above.
+
+---
+
+## 10. Kernel-checked subresources (per observation)
+
+An observation may report the IDs it depends on as `ObservationDescription.subresources`, and the
+Workshop then checks and records them itself (`src/observer-ledger.ts`). There is no
+per-connection protocol, flag, or switch: each call to `authorizeObservation()` decides.
+
+- **Absent:** the Workshop checks nothing for that read and records no requirement; the
+  gatekeeper's own `addObserver()` / `excludeObservers` must cover it, exactly as above.
+- **Present:** the read is attributed to its caller's context, every collaborator who can see
+  that context is checked through the connection's `verifyObserverAccess()`, and the IDs are
+  recorded as requirements on the audit record. A denial or failed check refuses the read and
+  records nothing.
+- **`[]`:** an explicit "nothing restricts this read": no check, and no requirement recorded.
+
+`excludeObservers` and `subresources` may appear together; both are enforced (the exclusion check
+runs first). The Context Library is the first shipping gatekeeper to report subresources (§9.2).
+Scheduled Tasks and Web Search report `[]` on every read.
+The gatekeeper's side of the contract (ID rules and limits, `verifyObserverAccess()` answers, what
+`addObserver()` must still enforce) is documented on those members in
+`workshop-shared/src/gatekeeper.ts`, and
+`plans/kernel-observer-tracking.md` records why it is shaped this way.
+
+- **Validation.** At most 10,000 IDs per observation, totalling at most 500,000 UTF-16 code
+  units, each a string of 1–512 characters of well-formed Unicode; duplicates are dropped. The
+  total keeps a read's audit record well inside Durable Object storage's 2 MB value limit, so
+  every read is exactly one record.
+- **The audit log is the requirement store.** An observation's audit record keeps the
+  `subresources` it reported, so keeping them is what marks a requirement. The record's `caller`
+  attributes it (`observerContextOf`): the agent's chat, the calling gadget, the chat a slash
+  command runs in, the gadget a firing hook wakes, or the workspace context for a hook naming no
+  gadget or a user acting outside any chat (a session opened from the connection itself, a new
+  chat's first slash command). A gadget caller persisted without a `gadgetId` is refused. The
+  sparse multi-key `actions.byObserverRequirement` index holds one key per subresource,
+  `<connection>:<context><id>:<subresource>` (context `w` for workspace, `c` for chats, `g` for
+  gadgets). Admission lists only the distinct keys a role reaches through each connection, never
+  the records under them, so repeated reads of the same data add no admission work. Nothing else
+  stores requirements, so the action log is append-only: deleting an entry would drop its checks.
+  Client action-log entries omit `subresources`. The record, its action ID and the read's
+  workspace policy flags commit in one transaction, so a failed write latches nothing.
+- **Admission is additive.** For every in-scope connection the overseer mints the chosen
+  account's verifier once and calls `addObserver()`, as above. Then, only if requirements were
+  recorded through that connection that the role reaches, it asks `verifyObserverAccess()` about
+  them. A collaborator must pass both; a connection with no recorded requirements is never asked
+  `verifyObserverAccess()` at admission. `addObserver()` therefore keeps enforcing whatever the
+  gatekeeper tracks itself: any binding-wide requirement its reads rely on, reads that omit
+  `subresources`, and everything it recorded before it began reporting them.
+- **Checks.** Connections enter each role's verification scope as above: "build" at creation,
+  "use" while a gadget binds it or an enabled hook feeds it. Within that scope, admission checks
+  every requirement the role reaches: "build" reaches every context, "use" the workspace and
+  every gadget. Requirements through a connection outside a "use" collaborator's scope (one
+  nothing binds or hooks) are not checked against them. Each observation checks its IDs for every
+  configured observer the data reaches, online or not; a collaborator who lost access is skipped.
+  Either way the Workshop looks up each observer's verifier for their chosen account
+  (`getVerifier()` refuses a disconnected or wrong-vendor account even when there is nothing to
+  check) and asks `verifyObserverAccess()`: one call per 10 observers for a read's audience, and
+  batches of 10,000 IDs for admission, stopping at the first batch that denies. A denial, missing
+  method, failed call, or malformed answer fails closed for every observer in the call, with no
+  permission cached between operations.
+- **Races.** After verifying, admission recomputes what it must verify and runs the pass again
+  (at most three times) if a connection in its scope appeared or disappeared, or a requirement
+  it did not check was recorded through one; reads through connections outside its scope don't
+  count. An observation recomputes who it reaches after its checks and checks whoever it gained
+  (at most three times). Both decisions are
+  confirmed in the same synchronous block that publishes them (the observer record; the audit
+  record), so neither can miss the other.
+- **Pending creations.** While a `createExternalResource` creation is pending, its simulated
+  reads are audited and enforce workspace policy but record no requirements, even if they report
+  subresources.
+- **Removal.** A disconnected connection's audit records stay, but admission ignores them: its
+  checks go with it, even when data it read survives (edge case 8).
+- **Direct contexts only.** A chat binding read records requirements only on that chat, checked
+  against "build" collaborators; a gadget binding read only on that gadget, checked against
+  "build" and "use" collaborators. Gadget session access, root RPC calls, forged restore stubs,
+  callbacks, spawned chats, code edits, merges, arguments and persistent writes transfer nothing
+  between contexts. This deliberately permits indirect disclosure, such as chat-derived data
+  reaching a gadget without checking its "use" collaborators against the chat's requirements.
+  Attribution follows the original authorizer, not wherever its capability is passed.
+- **Execution fence.** Agent gatekeeper loopbacks carry their `executionId`; a session that
+  outlives its executeCode call cannot authorize an observation that reports subresources. Reads
+  that omit them are unaffected, as before.
+- **Hooks.** A firing's observations are attributed to the gadget the hook wakes, recorded as
+  `{from: "hook", gadgetId}` from the hook record's `gadgetId` (or `defaultGadgetId`), and to the
+  workspace when neither names one.
+  That `gadgetId` is trusted even though an agent-bound hook's is inferred and its callback
+  carries its own restore target. While the hook is enabled, both "build" and "use"
+  collaborators must pass verification before delivery, and later admission checks the recorded
+  subresources. Firings revalidate that the hook exists, is enabled, and its connection is usable
+  on each call and synchronously before the observation's audit/policy commit, after asynchronous
+  verification. A racing disable/delete prevents delivery. Disabling or deleting a hook stops
+  future events and leaves delivered data's requirements in the action log, including across
+  workspace restarts; "build" collaborators stay verified against them, and "use" collaborators
+  only while something else still binds or hooks the connection.
+
+The integration fixture's "reports subresources" mode exercises this end to end in
+`packages/integration-tests/__tests__/observer-tracking.test.ts`.
 
 ---
 

@@ -150,7 +150,7 @@ function fakeOwner(impl: any): Fakes {
       aiModel: { profile: { type: "ai", id: modelId, name: "Sonnet" },
                  config: { provider: "anthropic", model: "claude-sonnet" } },
     }),
-    setGadgetLastActive: async (id: string) => { fakes.activated.push(id); },
+    setWorkspaceLastActive: async (id: string) => { fakes.activated.push(id); },
     syncWorkspaceOutputs: async () => {},
   };
   impl.users = { idFromString: (id: string) => id, get: () => userDo };

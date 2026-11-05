@@ -1,9 +1,10 @@
 import { RpcStub } from "capnweb";
-import { GadgetMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, GadgetMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, UserNotification, type DeviceSessionHandoffStart } from '@gadgets/workshop-shared/api';
-import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
+import { WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, AiModelConfig, RedactedAiModelConfig, ModelKind, modelKind, CollaboratorRole, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, WorkspaceMetadata, BlueprintMetadata, BlueprintLibrarySummary, BlueprintSource, BlueprintUserSummary, BLUEPRINT_SCREENSHOT_R2_PREFIX, GatekeeperVendorInfo, OutputSummary, ListOutputsResult, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, validateCommitEmail, NotificationSubscriber, NotificationMute, UserNotification, type DeviceSessionHandoffStart, type WebPushSubscription } from '@gadgets/workshop-shared/api';
+import { ActionDescription, Gatekeeper, GatekeeperUser, GatekeeperUserVerifier, GatekeeperVendor, AccountDescription, VendorDescription, GatekeeperConnectCallback, ConnectHandoff, SupportedResource, ResourceConfiguratorFrame, AppUiContext, GatekeeperUiFrame, GatekeeperUserSelection, GatekeeperUserSelectionExchange, RedeemedGatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { shouldAutoProvisionAccount, ambientGatekeeperMode } from "./provisioning-policy.js";
 import { CloudflareGatekeeperUser } from "@gadgets/workshop-shared/cloudflare-gatekeeper";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
+import { skipRpcValidation, validateRpc } from "capnweb-validate";
 import {
   makeUserStorage, type BlueprintUserRecord, type CloudflareBilling, type ConnectedAccountRecord,
   type GadgetRecord, type PendingConnectFlow, type PendingDeviceHandoffRecord,
@@ -19,7 +20,9 @@ import { isReservedBlueprintKey, readBlueprintKvRecord } from "./storage-schema/
 import { filterEnabledResources, isResourceDisabled, readAdminConfig } from "./admin-config.js";
 import { buildGatekeeperVendorMap } from "./auth/auth-vendors.js";
 import { CONNECT_FLOW_LIFETIME_MS, handoffTargetOrigin, hashPresentedSecret, hashSecret, newSecretToken, PENDING_HANDOFF_LIFETIME_MS } from "./connect-handoff.js";
-import { deliver, registerDevice } from "./notification-service.js";
+import {
+  authorizeDevice, deliver, registerAuthorizedDevice, registerDevice,
+} from "./notification-service.js";
 import {
   DEVICE_HANDOFF_LIFETIME_MS, isDeviceHandoffState, sealDeviceSessionHandoff,
   type DeviceSessionCredential, type DeviceSessionHandoff,
@@ -33,6 +36,12 @@ const OUTPUTS_BACKFILL_PAGE = 16;
 
 /** Server-enforced lifetime of a Workshop session issued to a native device. */
 export const DEVICE_SESSION_LIFETIME_MS = 30 * 24 * 60 * 60_000;
+
+/**
+ * How long a user selection ticket (GatekeeperUserSelection) remains
+ * redeemable.
+ */
+export const GATEKEEPER_USER_SELECTION_LIFETIME_MS = 30 * 60 * 1000;
 
 /**
  * Metadata about an auto-provisioned account that provides an agent singleton and/or a management UI.
@@ -123,7 +132,7 @@ export type UserChatContext = {
   quickModel?: AiModelConfig;
 }
 
-function isFullyCreated(g: GadgetRecord): g is GadgetMetadataWithTimestamps {
+function isFullyCreated(g: GadgetRecord): g is WorkspaceMetadataWithTimestamps {
   return g.lastActive !== undefined;
 }
 
@@ -346,7 +355,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       expiresAt: new Date(handoffExpiresAt),
       sessionTokenId,
     });
-    await this.#armHandoffSweep();
+    await this.#armExpirySweep();
     logger.info("device session handoff staged", {
       event: "auth.device_handoff.staged",
       credentialKind: credential.kind,
@@ -364,7 +373,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (!pending) return null;
     if (pending.expiresAt.getTime() <= Date.now()) {
       this.#dropPendingDeviceHandoff(pending);
-      await this.#armHandoffSweep();
+      await this.#armExpirySweep();
       return null;
     }
     if (pending.ticketHash !== await presentedHash) return null;
@@ -373,13 +382,13 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       const session = this.storage.sessions.get(pending.sessionTokenId);
       if (!session || !session.pendingUntil || session.pendingUntil.getTime() <= Date.now()) {
         if (session) this.storage.sessions.delete(pending.sessionTokenId);
-        await this.#armHandoffSweep();
+        await this.#armExpirySweep();
         return null;
       }
       const { pendingUntil: _pendingUntil, ...active } = session;
       this.storage.sessions.put(active);
     }
-    await this.#armHandoffSweep();
+    await this.#armExpirySweep();
     logger.info("device session handoff consumed", {
       event: "auth.device_handoff.consumed",
       credentialKind: pending.sessionTokenId ? "workshop" : "cloudflare-access",
@@ -463,9 +472,32 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return this.storage.passwordHashHash.get() !== null;
   }
 
-  /** Exchange the native app's one-time device registration for that device's push subscription. */
-  async registerNotificationDevice(deviceRegistrationId: string): Promise<void> {
-    let { deviceKey, subscriptionId } = await registerDevice(this.env, deviceRegistrationId);
+  /** Vouch for this authenticated user using the installation's registered signing identity. */
+  async authorizeNotificationDevice(): Promise<string> {
+    return authorizeDevice(this.env, this.#notificationSubject);
+  }
+
+  /**
+   * Exchange a native app's one-time device registration, or a browser's Web Push subscription,
+   * for that device's push subscription.
+   */
+  async registerNotificationDevice(registration: string | WebPushSubscription): Promise<void> {
+    this.#storeNotificationSubscription(
+        await registerDevice(this.env, registration, this.#notificationSubject));
+  }
+
+  /** Exchange a CFOS-authorized native registration under this User DO's central subject. */
+  async registerAuthorizedNotificationDevice(deviceRegistrationId: string): Promise<void> {
+    this.#storeNotificationSubscription(await registerAuthorizedDevice(
+        this.env, deviceRegistrationId, this.#notificationSubject));
+  }
+
+  get #notificationSubject(): string {
+    return this.ctx.id.toString();
+  }
+
+  #storeNotificationSubscription(
+      { deviceKey, subscriptionId }: Awaited<ReturnType<typeof registerDevice>>): void {
     this.storage.notificationSubscriptions.put(
         { ...this.storage.notificationSubscriptions.get(), [deviceKey]: subscriptionId });
   }
@@ -486,11 +518,25 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return new RpcStub<{}>({ [Symbol.dispose]: unsubscribe });
   }
 
+  /** See `AuthenticatedApi.setWorkspaceNotificationMute()`. */
+  async setWorkspaceNotificationMute(workspaceId: string, mute: NotificationMute | null)
+      : Promise<void> {
+    let record = this.storage.gadgets.get(workspaceId);
+    if (!record) throw new Error("No such workspace belonging to user.");
+    record.notificationMute = mute ?? undefined;
+    this.storage.gadgets.put(record);
+  }
+
   /**
    * Offer a notification to visible clients; push it to every registered device unless one
-   * acknowledges within 3s.
+   * acknowledges within 3s. A finished task in a workspace the user muted goes nowhere.
    */
   async publishNotification(notification: UserNotification): Promise<void> {
+    let mute = this.storage.gadgets.get(notification.workspaceId)?.notificationMute;
+    if (notification.kind === "taskCompleted" && mute &&
+        ("indefinite" in mute || mute.until.getTime() > Date.now())) {
+      return;
+    }
     let timeout: ReturnType<typeof setTimeout> | undefined;
     let acknowledged = await Promise.race([
       Promise.any([...this.#notificationSubscribers.values()]
@@ -500,7 +546,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (acknowledged) return;
     let subscriptions = Object.entries(this.storage.notificationSubscriptions.get());
     let results = await Promise.allSettled(subscriptions.map(async ([deviceKey, subscriptionId]) => {
-      if (await deliver(this.env, subscriptionId, notification)) return;
+      if (await deliver(this.env, this.#notificationSubject, subscriptionId, notification)) return;
       // This subscription is dead; the device gets a new one when its app next opens. Keep one it
       // registered while this delivery was in flight.
       let { [deviceKey]: current, ...others } = this.storage.notificationSubscriptions.get();
@@ -539,17 +585,17 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Called by the overseer every time a collaborator opens a shared gadget.
+   * Called by the overseer every time a collaborator opens a shared workspace.
    * Creates the record on first open; updates lastActive on subsequent opens.
    *
    * `role` is cached so listings built from this DO can offer the actions it permits without
    * reopening the workspace to ask. Presentation only: every operation is still authorized by the
    * Overseer when attempted.
    */
-  async recordSharedGadgetOpen(
-      gadgetId: string, title: string, ownerProfile: AiChatAuthorInfo, role?: CollaboratorRole
+  async recordSharedWorkspaceOpen(
+      workspaceId: string, title: string, ownerProfile: AiChatAuthorInfo, role?: CollaboratorRole
   ): Promise<void> {
-    let record = this.storage.gadgets.get(gadgetId);
+    let record = this.storage.gadgets.get(workspaceId);
     if (record && !record.owner) {
       throw new Error("User owns this workspace; it's not shared with them.");
     }
@@ -562,9 +608,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       record.role = role;
       this.storage.gadgets.put(record);
     } else {
-      // First time opening this shared gadget.
+      // First time opening this shared workspace.
       this.storage.gadgets.put({
-        id: gadgetId,
+        id: workspaceId,
         title,
         owner: ownerProfile,
         role,
@@ -579,23 +625,23 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * comes from the Overseer's live sharing graph; this only keeps the listing's available actions
    * accurate after a collaborator is downgraded.
    */
-  async updateSharedGadgetRole(gadgetId: string, role: CollaboratorRole): Promise<void> {
-    let record = this.storage.gadgets.get(gadgetId);
+  async updateSharedWorkspaceRole(workspaceId: string, role: CollaboratorRole): Promise<void> {
+    let record = this.storage.gadgets.get(workspaceId);
     if (!record?.owner) return;
     record.role = role;
     this.storage.gadgets.put(record);
   }
 
   /**
-   * Forgets a gadget shared with this user: drops it from their workspace listing and its outputs
+   * Forgets a workspace shared with this user: drops it from their workspace listing and its outputs
    * from their Outputs index. Called both when the user dismisses it and when their access is
    * revoked (Overseer.refreshAffectedCollaboratorListings()); it grants and revokes nothing.
    */
-  async forgetSharedGadget(gadgetId: string): Promise<void> {
-    let record = this.storage.gadgets.get(gadgetId);
+  async forgetSharedWorkspace(workspaceId: string): Promise<void> {
+    let record = this.storage.gadgets.get(workspaceId);
     if (record && record.owner) {
-      this.storage.gadgets.delete(gadgetId);
-      this.storage.outputs.byWorkspace.delete(gadgetId);
+      this.storage.gadgets.delete(workspaceId);
+      this.storage.outputs.byWorkspace.delete(workspaceId);
     }
   }
 
@@ -683,8 +729,11 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   #putModel(profile: AiChatAuthorInfo, config: AiModelConfig, models: GatewayModels | null) {
-    if (models && !models.providers.has(config.provider)) {
+    if (models && !models.addableProviders.includes(config.provider)) {
       throw new Error(`Provider "${config.provider}" is not available in AI Gateway mode.`);
+    }
+    if (config.provider === "cloudflare-auto-router") {
+      throw new Error("The Auto Router model runs only through an AI Gateway.");
     }
     for (let limit of [config.contextWindow, config.outputLimit]) {
       if (limit !== undefined && !(Number.isSafeInteger(limit) && limit > 0)) {
@@ -889,18 +938,18 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     return models && !models.userModels ? undefined : this.storage.aiModels.get(id);
   }
 
-  async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
-    let result: GadgetMetadataWithTimestamps[] = [];
-    for (let gadget of this.storage.gadgets.list()) {
-      if (isFullyCreated(gadget)) {
-        result.push(gadget);
+  async listWorkspaces(): Promise<WorkspaceMetadataWithTimestamps[]> {
+    let result: WorkspaceMetadataWithTimestamps[] = [];
+    for (let workspace of this.storage.gadgets.list()) {
+      if (isFullyCreated(workspace)) {
+        result.push(workspace);
       }
     }
     return result;
   }
 
-  async updateTitle(gadgetId: string, title: string) {
-    let record = this.storage.gadgets.get(gadgetId);
+  async updateTitle(workspaceId: string, title: string) {
+    let record = this.storage.gadgets.get(workspaceId);
     if (!record) {
       throw new Error("No such workspace belonging to user.");
     }
@@ -908,8 +957,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
-  async updatePinned(gadgetId: string, pinned: boolean) {
-    let record = this.storage.gadgets.get(gadgetId);
+  async updatePinned(workspaceId: string, pinned: boolean) {
+    let record = this.storage.gadgets.get(workspaceId);
     if (!record) {
       throw new Error("No such workspace belonging to user.");
     }
@@ -917,32 +966,32 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     this.storage.gadgets.put(record);
   }
 
-  async getGadget(id: string): Promise<GadgetMetadata | null> {
+  async getWorkspace(id: string): Promise<WorkspaceMetadata | null> {
     return this.storage.gadgets.get(id) || null;
   }
 
-  async newGadget(id: string, title: string): Promise<void> {
+  async newWorkspace(id: string, title: string): Promise<void> {
     let created = new Date();
     this.storage.gadgets.put({id, title, created});
   }
 
-  async ensureGadgetRegistered(id: string, title: string): Promise<void> {
+  async ensureWorkspaceRegistered(id: string, title: string): Promise<void> {
     if (this.storage.gadgets.get(id)) return;
-    await this.newGadget(id, title);
+    await this.newWorkspace(id, title);
   }
 
-  async setGadgetLastActive(id: string, time: Date, totalCost: number | undefined): Promise<void> {
-    let gadget = this.storage.gadgets.get(id);
-    if (gadget) {
-      gadget.lastActive = time;
+  async setWorkspaceLastActive(id: string, time: Date, totalCost: number | undefined): Promise<void> {
+    let workspace = this.storage.gadgets.get(id);
+    if (workspace) {
+      workspace.lastActive = time;
       if (totalCost) {
-        gadget.totalCost = totalCost;
+        workspace.totalCost = totalCost;
       }
-      this.storage.gadgets.put(gadget);
+      this.storage.gadgets.put(workspace);
     }
   }
 
-  async deleteGadget(id: string): Promise<void> {
+  async deleteWorkspace(id: string): Promise<void> {
     this.storage.gadgets.delete(id);
     this.storage.outputs.byWorkspace.delete(id);
   }
@@ -1540,18 +1589,115 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
    * Open the full-page management UI for an account that declares one. `context.isAdmin` is supplied
    * fresh by the caller so admin-gated features reflect the user's current status.
    */
-  async startAccountAppUi(accountId: number, context: AppUiContext): Promise<GatekeeperUiFrame> {
+  async startAccountAppUi(
+      accountId: number, options: Pick<AppUiContext, "isAdmin">,
+  ): Promise<GatekeeperUiFrame> {
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record?.description.providesUi) throw new Error("No such app.");
-    return (record.account as unknown as SingletonAccountStub).startAppUi(context);
+    let userSelectionExchange = this.ctx.exports.GatekeeperUserSelectionExchangeImpl({
+      props: { selectorUserId: this.ctx.id.toString(), appAccountId: accountId },
+    });
+    return (record.account as unknown as SingletonAccountStub)
+        .startAppUi({ isAdmin: options.isAdmin, userSelectionExchange });
   }
 
+  // The account record behind one of this user's gatekeeper apps, or undefined
+  // if `accountId` is not a UI-providing account the deployment currently
+  // offers (the same test listProvidedAccounts applies, since a "disabled"
+  // ambient gatekeeper's account stays dormant).
+  async #uiAccountRecord(accountId: number): Promise<ConnectedAccountRecord | undefined> {
+    let record = this.storage.connectedAccounts.get(accountId);
+    if (!record?.description.providesUi) return undefined;
+    let config = await readAdminConfig(this.env);
+    if (config.disabledGatekeepers.includes(record.vendorId)) return undefined;
+    if (record.autoProvisioned) {
+      if (ambientGatekeeperMode(config, record.vendorId) === "disabled") return undefined;
+    }
+    return record;
+  }
+
+  /**
+   * Mint a single-use ticket for a user selected on behalf of a gatekeeper app,
+   * redeemable through that gatekeeper app's exchange capability (see
+   * GatekeeperUserSelectionExchangeImpl). Returns null if the selected user is
+   * this user or does not exist. Self-selection uses stable DO identity because
+   * ctx.id.name may be absent after a cold start through idFromString().
+   */
+  async createGatekeeperUserSelection(
+      appAccountId: number, selectedUserId: string,
+  ): Promise<GatekeeperUserSelection | null> {
+    let app = await this.#uiAccountRecord(appAccountId);
+    if (!app) throw new Error("No such app.");
+    let selectedId = this.ctx.exports.UserDurableObject.idFromName(selectedUserId);
+    if (this.ctx.id.equals(selectedId)) return null;
+    let selectedProfile = await this.ctx.exports.UserDurableObject.get(selectedId).whoamiIfExists();
+    if (!selectedProfile) return null;
+    let profile = { displayName: selectedProfile.name };
+    let { secret, hash: ticketHash } = await newSecretToken();
+    let expiresAt = new Date(Date.now() + GATEKEEPER_USER_SELECTION_LIFETIME_MS);
+    this.storage.pendingUserSelections.put({
+      ticketHash, appAccountId, vendorId: app.vendorId, selectedUserId, expiresAt,
+    });
+    await this.#armExpirySweep();
+    return { ticket: secret.toHex(), profile };
+  }
+
+  /**
+   * Redeem a ticket returned from createGatekeeperUserSelection. A ticket can
+   * only be redeemed once by the gatekeeper app account that minted it. A
+   * ticket minted for a different gatekeeper app account is refused without
+   * being spent, so a later valid exchange can still redeem it. Returns all of
+   * the selected user's eligible same-vendor accounts. The gatekeeper handles
+   * zero or multiple results. A ticket represents a Workshop user, not a
+   * connected account, so a 1:1 mapping with a connected account is not
+   * guaranteed.
+   */
+  async redeemGatekeeperUserSelection(
+      appAccountId: number, ticket: string,
+  ): Promise<RedeemedGatekeeperUserSelection[]> {
+    let ticketHash = await hashPresentedSecret(ticket);
+    let record = ticketHash === undefined
+        ? undefined : this.storage.pendingUserSelections.get(ticketHash);
+    if (!record || record.appAccountId !== appAccountId) {
+      throw new Error("This selection has expired. Please select the user again.");
+    }
+    this.storage.pendingUserSelections.delete(record.ticketHash);
+    if (record.expiresAt.getTime() <= Date.now()) {
+      throw new Error("This selection has expired. Please select the user again.");
+    }
+    let app = await this.#uiAccountRecord(appAccountId);
+    if (!app || app.vendorId !== record.vendorId) throw new Error("No such app.");
+    return this.ctx.exports.UserDurableObject.getByName(record.selectedUserId)
+        .selectableGatekeeperUsers(record.vendorId);
+  }
+
+  /**
+   * Make the account's grant cover the resource types `resourceUrlPatterns` names. Only the
+   * gatekeeper knows what it was granted, so it decides: it returns the URL of a consent flow that
+   * widens the grant, opened here as a connect flow, or no URL when the grant already covers them.
+   */
   async ensureAccountResources(accountId: number, resourceUrlPatterns: string[])
       : Promise<ConnectFlowStart | null> {
     let record = this.storage.connectedAccounts.get(accountId);
     if (!record) throw new Error("No such account.");
     let { url } = await record.account.ensureResources(resourceUrlPatterns);
-    if (url === undefined) return null;
+    if (url === undefined) {
+      // Nothing to grant, yet callers ask for what the account's stored description doesn't list as
+      // granted, so that list is out of date. A gatekeeper that renames a resource type's
+      // `urlPattern` reads the grants it recorded under the new name, but the description stored
+      // here keeps the old one until it is fetched again. Fetch it now, or the UI keeps offering a
+      // grant the account already has. Best-effort: null still means nothing needed granting.
+      try {
+        let description = await record.account.describe();
+        let current = this.storage.connectedAccounts.get(accountId);
+        if (current) this.storage.connectedAccounts.put({ ...current, description });
+      } catch (err) {
+        logger.warn("failed to refresh a stale account description", {
+          event: "account.describe.refresh.failed", vendorId: record.vendorId, accountId, error: err,
+        });
+      }
+      return null;
+    }
     return { url, nonce: await this.openConnectFlow(accountId) };
   }
 
@@ -1877,7 +2023,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let { secret, hash: nonceHash } = await newSecretToken();
     let expiresAt = new Date(Date.now() + CONNECT_FLOW_LIFETIME_MS);
     this.storage.pendingConnectFlows.put({ nonceHash, accountId, expiresAt });
-    await this.#armHandoffSweep();
+    await this.#armExpirySweep();
     return secret.toHex();
   }
 
@@ -1891,7 +2037,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     let { secret, hash: ticketHash } = await newSecretToken();
     let expiresAt = new Date(Date.now() + PENDING_HANDOFF_LIFETIME_MS);
     this.storage.pendingHandoffs.put({ ...record, ticketHash, expiresAt });
-    await this.#armHandoffSweep();
+    await this.#armExpirySweep();
     return { targetOrigin, ticket: secret.toHex() };
   }
 
@@ -1996,8 +2142,8 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     if (pending.sessionTokenId) this.storage.sessions.delete(pending.sessionTokenId);
   }
 
-  // Arm the alarm for the soonest pending handoff or expiring device session.
-  async #armHandoffSweep(): Promise<void> {
+  // Arm the alarm for the soonest pending expiry, including device sessions and picker selections.
+  async #armExpirySweep(): Promise<void> {
     let next: number | undefined;
     let consider = (at: number) => { if (next === undefined || at < next) next = at; };
     for (let flow of this.storage.pendingConnectFlows.list()) consider(flow.expiresAt.getTime());
@@ -2006,6 +2152,9 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     }
     for (let session of this.storage.sessions.list()) {
       if (session.expiresAt) consider(session.expiresAt.getTime());
+    }
+    for (let selection of this.storage.pendingUserSelections.list()) {
+      consider(selection.expiresAt.getTime());
     }
     try {
       for (let pending of this.storage.pendingHandoffs.list()) consider(pending.expiresAt.getTime());
@@ -2027,14 +2176,19 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
   }
 
   /**
-   * Drop pending handoffs whose ticket never came back (see #dropPendingConnect) and flows whose
-   * nonce was never presented (nothing to revoke for those).
+   * Drop unconfirmed connect handoffs, abandoned connect flows and picker selections, and expired
+   * device handoffs and sessions. Device handoff cleanup also deletes its unactivated session.
    */
   async alarm(): Promise<void> {
     let now = Date.now();
     let expiredFlows = Array.from(this.storage.pendingConnectFlows.list())
         .filter(flow => flow.expiresAt.getTime() <= now);
     for (let flow of expiredFlows) this.storage.pendingConnectFlows.delete(flow.nonceHash);
+    let expiredSelections = Array.from(this.storage.pendingUserSelections.list())
+        .filter(selection => selection.expiresAt.getTime() <= now);
+    for (let selection of expiredSelections) {
+      this.storage.pendingUserSelections.delete(selection.ticketHash);
+    }
     let expired: PendingHandoffRecord[] = [];
     try {
       for (let pending of this.storage.pendingHandoffs.list()) {
@@ -2042,7 +2196,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       }
     } catch (err) {
       // Same failure mode as #connectedAccountRecords: a stub for a Worker that is no longer bound
-      // fails to deserialize. Leave the sweep for next time (#armHandoffSweep bounds the retry).
+      // fails to deserialize. Leave the sweep for next time (#armExpirySweep bounds the retry).
       logger.warn("failed to list pending handoffs", {
         event: "connect.handoff.sweep.failed", error: err,
       });
@@ -2059,7 +2213,7 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
         this.storage.sessions.delete(session.tokenId);
       }
     }
-    await this.#armHandoffSweep();
+    await this.#armExpirySweep();
   }
 
   /**
@@ -2128,11 +2282,12 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
 
   /**
    * Mint a verifier from one of THIS user's connected accounts, identified by accountId. The
-   * overseer passes the returned verifier to a gatekeeper's `addObserver()` so the gatekeeper can
-   * check whether this user is allowed to observe the data read through it, or to its
-   * `applyCreation()` to create the resource in this account. Returns null if the
-   * account no longer exists (or never existed). Throws if the account belongs to a different
-   * vendor (not a legitimate UI state — only reachable by bypassing client-side filtering).
+   * overseer passes the returned verifier to a gatekeeper's `addObserver()` or
+   * `verifyObserverAccess()` so the gatekeeper can check whether this user is allowed to observe
+   * the data read through it, or to a gatekeeper's `applyCreation()` to create the resource in
+   * this account. Returns null if the account no longer exists (or never existed). Throws if the
+   * account belongs to a different vendor (not a legitimate UI state — only reachable by bypassing
+   * client-side filtering).
    *
    * Account *selection* (which of the user's accounts to use for a given binding) is done by the
    * frontend; this method validates and resolves a chosen account to its verifier.
@@ -2149,6 +2304,39 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
       throw new Error("Invalid account selection for this service.");
     }
     return await account.account.getVerifier();
+  }
+
+  // All currently eligible accounts this selected user has with the requested vendor. The
+  // gatekeeper, not the Workshop, decides what zero or multiple accounts mean for its operation.
+  async #eligibleGatekeeperAccounts(vendorId: string): Promise<ConnectedAccountRecord[]> {
+    if (!this.storage.created.get()) return [];
+    vendorId = vendorId.toLowerCase();
+
+    let config = await readAdminConfig(this.env);
+    if (config.disabledGatekeepers.includes(vendorId)) return [];
+
+    await this.#ensureAutoProvisionedAccounts();
+
+    return [...this.#connectedAccountRecords()].filter((record) =>
+      record.vendorId === vendorId && areCredentialsValid(record) &&
+      (!record.autoProvisioned || ambientGatekeeperMode(config, vendorId) !== "disabled")
+    );
+  }
+
+  /**
+   * Return every currently eligible account belonging to this selected user and
+   * vendor, each with its own identity capability and the user's fresh
+   * display-name snapshot. Returns an empty array when none qualify; does not
+   * choose between multiple accounts. Accounts are resolved at redemption time
+   * and need not be the same accounts the user had when the ticket was minted.
+   */
+  async selectableGatekeeperUsers(vendorId: string): Promise<RedeemedGatekeeperUserSelection[]> {
+    let accounts = await this.#eligibleGatekeeperAccounts(vendorId);
+    if (accounts.length === 0) return [];
+    let profile = { displayName: this.storage.profile.get().name };
+    return Promise.all(accounts.map(async account => ({
+      verifier: await account.account.getVerifier(), profile,
+    })));
   }
 
   /**
@@ -2193,6 +2381,37 @@ export class GatekeeperConnectCallbackImpl
   async credentialsRestored(expiresAt?: Date): Promise<void> {
     let userStub = this.#getUserStub();
     await userStub.markCredentialsRestored(this.ctx.props.accountId, expiresAt);
+  }
+}
+
+type GatekeeperUserSelectionExchangeProps = {
+  selectorUserId: string;
+  appAccountId: number;
+};
+
+/**
+ * The capability exposed to a gatekeeper app for redeeming user selection
+ * tickets (AppUiContext.userSelectionExchange). Its props contain the selecting
+ * user's ID and the one gatekeeper account startAccountAppUi was called on.
+ * Every ticket is redeemed against that scope, so the capability cannot resolve
+ * anything that the Workshop did not mint for it.
+ */
+@validateRpc()
+export class GatekeeperUserSelectionExchangeImpl
+    extends WorkerEntrypoint<Cloudflare.Env, GatekeeperUserSelectionExchangeProps>
+    implements GatekeeperUserSelectionExchange {
+  /**
+   * RPC validation is skipped for the same reason every gatekeeper's
+   * getVerifier() skips it: the generated return validator wraps the native
+   * Fetcher in a Proxy that Workers RPC then refuses to serialize. The ticket
+   * itself is checked by hashPresentedSecret before it is looked up.
+   */
+  @skipRpcValidation()
+  redeem(ticket: string): Promise<RedeemedGatekeeperUserSelection[]> {
+    let { selectorUserId, appAccountId } = this.ctx.props;
+    let users = this.ctx.exports.UserDurableObject;
+    return users.get(users.idFromString(selectorUserId))
+        .redeemGatekeeperUserSelection(appAccountId, ticket);
   }
 }
 

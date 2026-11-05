@@ -47,7 +47,7 @@ async function headOf(workpieces: WorkpieceRecorder, gadgetId: WorkpieceId, afte
 
 // A workspace with one committed gadget, "Rent Roll", whose UI is APP_UI.
 async function seedWorkspace(owner: RpcStub<AuthenticatedApi>): Promise<string> {
-  using workspace = await owner.newGadget();
+  using workspace = await owner.newWorkspace();
   const workpieces = new WorkpieceRecorder();
   using _subscription = await workspace.subscribeToWorkpieces(workpieces);
   await workpieces.loaded;
@@ -93,9 +93,9 @@ it("copies a workspace for its owner, its build collaborators, and (as an admin)
     gadgets: ["Rent Roll"], bound: [], unbound: [], hooksNotCopied: 0,
   });
   expect(copy.id).not.toBe(sourceId);
-  expect((await owner.listGadgets()).map(w => w.id)).toContain(copy.id);
+  expect((await owner.listWorkspaces()).map(w => w.id)).toContain(copy.id);
   {
-    using copied = await owner.openGadget(copy.id);
+    using copied = await owner.openWorkspace(copy.id);
     expect(await uiOf(copied, "Rent Roll")).toBe(APP_UI);
   }
 
@@ -107,13 +107,13 @@ it("copies a workspace for its owner, its build collaborators, and (as an admin)
   using strangerPublic = connect(requireHarness().url);
   using stranger = await signUp(strangerPublic, strangerName!);
   {
-    using source = await owner.openGadget(sourceId);
+    using source = await owner.openWorkspace(sourceId);
     expect(await source.addCollaborator(buildName!, "build")).not.toBeNull();
     expect(await source.addCollaborator(useName!, "use")).not.toBeNull();
   }
   const builderCopy = await builder.copyWorkspace(sourceId, { title: "Ops · Review · Rent Roll" });
   expect(builderCopy.title).toBe("Ops · Review · Rent Roll");
-  expect((await builder.listGadgets()).find(w => w.id === builderCopy.id)?.owner).toBeUndefined();
+  expect((await builder.listWorkspaces()).find(w => w.id === builderCopy.id)?.owner).toBeUndefined();
   await expect(user.copyWorkspace(sourceId)).rejects.toThrow(/only has permission to use/);
   await expect(stranger.copyWorkspace(sourceId)).rejects.toThrow();
 
@@ -123,7 +123,7 @@ it("copies a workspace for its owner, its build collaborators, and (as an admin)
   using adminPublic = connect(requireHarness().url);
   using admin = await signUp(adminPublic, ADMIN_USERNAME);
   {
-    using source = await owner.openGadget(sourceId);
+    using source = await owner.openWorkspace(sourceId);
     expect(await source.addCollaborator(ADMIN_USERNAME, "build")).not.toBeNull();
   }
   await expect(admin.copyWorkspace(sourceId, { forUser: newName }))
@@ -131,10 +131,10 @@ it("copies a workspace for its owner, its build collaborators, and (as an admin)
   using newPublic = connect(requireHarness().url);
   using newHire = await signUp(newPublic, newName!);
   const forNewHire = await admin.copyWorkspace(sourceId, { forUser: newName });
-  expect((await newHire.listGadgets()).map(w => w.id)).toContain(forNewHire.id);
-  expect((await admin.listGadgets()).map(w => w.id)).not.toContain(forNewHire.id);
+  expect((await newHire.listWorkspaces()).map(w => w.id)).toContain(forNewHire.id);
+  expect((await admin.listWorkspaces()).map(w => w.id)).not.toContain(forNewHire.id);
   {
-    using copied = await newHire.openGadget(forNewHire.id);
+    using copied = await newHire.openWorkspace(forNewHire.id);
     expect((await copied.getMetadata()).owner).toBeUndefined();
     expect(await uiOf(copied, "Rent Roll")).toBe(APP_UI);
   }

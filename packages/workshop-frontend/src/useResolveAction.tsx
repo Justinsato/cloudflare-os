@@ -7,7 +7,7 @@ import type {
   ActionLogEntry, ActionState, CreationApproval, Overseer,
 } from '@gadgets/workshop-shared/api'
 import { CreationAccountModal } from './components/CreationAccountModal'
-import { classifyRpcError } from './rpcErrors'
+import { classifyRpcError, rpcFailureDescription } from './rpcErrors'
 
 type ActionDecision = 'approve' | 'deny'
 
@@ -135,7 +135,7 @@ export function useResolveAction(
         ? { title: `No answer yet to ${decision} action`, description: error.message, variant: 'error' }
         : {
           title: `Failed to ${decision} action`,
-          ...(error instanceof ConnectionDropped ? { description: error.message } : {}),
+          description: error instanceof ConnectionDropped ? error.message : rpcFailureDescription(error),
           variant: 'error',
         })
     } finally {

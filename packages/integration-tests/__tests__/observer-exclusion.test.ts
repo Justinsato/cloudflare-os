@@ -62,7 +62,7 @@ async function newWorkspace(publicApi: RpcStub<PublicApi>, thingName: string): P
   const [alice] = nextUsernames("alice");
   const aliceApi = await signUp(publicApi, alice);
   const account = await provisionAccount(aliceApi);
-  const overseer = await aliceApi.newGadget();
+  const overseer = await aliceApi.newWorkspace();
   using gatekeeper = await overseer.newGatekeeper(account.id, thingUrl(thingName));
   if (!gatekeeper) throw new Error("Failed to create the test connection");
   const gatekeeperId = await gatekeeper.getId();
@@ -81,16 +81,17 @@ async function reopenAfterRestart(ws: Workspace) {
   await waitFor("the restart to fell the old workspace instance", () =>
     ws.session.readValue().then(() => null, () => true));
   return waitFor("the workspace to come back after the restart", async () => {
-    const publicApi = connect(harness.url);
+    using stack = new DisposableStack();
     try {
-      using api = await logIn(publicApi, ws.alice);
-      using overseer = await api.openGadget(ws.gadgetId);
-      using gatekeeper = await overseer.getGatekeeperById(ws.gatekeeperId);
-      const session = await gatekeeper.openSession() as RpcStub<TestSession>;
+      const publicApi = stack.use(connect(harness.url));
+      const api = stack.use(await logIn(publicApi, ws.alice));
+      // Keep the workspace's native RPC session alive until the returned read session is done.
+      const overseer = stack.use(await api.openWorkspace(ws.gadgetId));
+      const gatekeeper = stack.use(await overseer.getGatekeeperById(ws.gatekeeperId));
+      const session = stack.use(await gatekeeper.openSession() as RpcStub<TestSession>);
       await session.readValue();
-      return { session, [Symbol.dispose]: () => publicApi[Symbol.dispose]() };
+      return Object.assign(stack.move(), { session });
     } catch {
-      publicApi[Symbol.dispose]();
       return null;
     }
   });
@@ -118,7 +119,7 @@ async function verifiedCollaborator(
   const before = await observerEvents(resourceUrl);
   const callback =
       stubFor(new ObserverConfigRecorder().alwaysChoose(account.id, MAX_OBSERVER_PROMPTS));
-  using _ws = await api.openGadget(ws.gadgetId, undefined, callback)
+  using _ws = await api.openWorkspace(ws.gadgetId, undefined, callback)
       .finally(() => callback[Symbol.dispose]());
   const events = (await observerEvents(resourceUrl)).slice(before.length);
   expect(events).toMatchObject([{ type: "add" }]);

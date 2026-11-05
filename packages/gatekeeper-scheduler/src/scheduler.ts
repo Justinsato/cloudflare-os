@@ -26,6 +26,7 @@ import type {
   SupportedResource,
   VendorDescription,
 } from "@gadgets/workshop-shared/gatekeeper";
+import { workerVersionTag } from "@gadgets/workshop-shared/gatekeeper";
 import {
   normalizeCalendarRule,
   normalizeInterval,
@@ -160,6 +161,7 @@ export class ScheduleSessionImpl extends RpcTarget implements ScheduleSession {
     await this.#approvalQueue.authorizeObservation({
       title: "List scheduled tasks",
       description: "List enabled schedules for this workspace.",
+      subresources: [],
     });
     return schedules;
   }
@@ -385,6 +387,14 @@ export class SchedulerGatekeeper
   /** Removes a collaborator; no observer state is retained. */
   async removeObserver(_id: string): Promise<void> {}
 
+  /** Allows every observer under the low-stakes observer policy. */
+  async verifyObserverAccess(
+    observers: { id: string; verifier: Fetcher<GatekeeperUserVerifier> }[],
+    _subresources: string[],
+  ): Promise<{ allowedObserverIds: string[] }> {
+    return { allowedObserverIds: observers.map((observer) => observer.id) };
+  }
+
   /** Rejects action application because the scheduler is read-only. */
   applyAction(_action: number): Promise<void> {
     throw new Error("Scheduled Tasks is read-only and implements no actions.");
@@ -520,6 +530,11 @@ export class GatekeeperVendor extends WorkerEntrypoint<Cloudflare.Env> {
       autoProvisionsAccount: true,
       providesAuth: false,
     };
+  }
+
+  /** The version tag of this Worker's running version, for the deployment's admins. */
+  async versionTag(): Promise<string | undefined> {
+    return workerVersionTag(this.env);
   }
 
   /** Mints a new opaque Scheduler account capability. */

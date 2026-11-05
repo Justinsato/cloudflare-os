@@ -526,7 +526,7 @@ function OutputsPage() {
     let overseer
     let gadget
     try {
-      overseer = await authenticatedApi.openGadget(current.workspaceId)
+      overseer = await authenticatedApi.openWorkspace(current.workspaceId)
       gadget = overseer.getGadget(current.workpieceId)
       const title = renameValue.trim()
       await gadget.setTitle(title)
@@ -550,7 +550,7 @@ function OutputsPage() {
     let overseer
     let gadget
     try {
-      overseer = await authenticatedApi.openGadget(current.workspaceId)
+      overseer = await authenticatedApi.openWorkspace(current.workspaceId)
       gadget = overseer.getGadget(current.workpieceId)
       await gadget.remove()
       setOutputs((list) => list.filter((output) => outputKey(output) !== outputKey(current)))

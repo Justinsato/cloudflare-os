@@ -81,14 +81,15 @@ async function withImpl(fn: (h: Harness) => Promise<void>, opts: {admins?: strin
       whoami: async () => profile,
       whoamiIfExists: async () => profile,
       getChatContext: async () => ({ profile: OWNER }),
-      recordSharedGadgetOpen: async () => {},
-      listGadgets: async () => listing,
-      getGadget: async (id: string) => listing.find(w => w.id === id) ?? null,
-      newGadget: async (id: string, title: string) => {
+      recordSharedWorkspaceOpen: async () => {},
+      listGatekeeperVendors: async () => [],
+      listWorkspaces: async () => listing,
+      getWorkspace: async (id: string) => listing.find(w => w.id === id) ?? null,
+      newWorkspace: async (id: string, title: string) => {
         h.registered.push({id, title});
         listing.push({ id, title, created: new Date(0), lastActive: new Date(0) });
       },
-      setGadgetLastActive: async (id: string) => { h.activated.push(id); },
+      setWorkspaceLastActive: async (id: string) => { h.activated.push(id); },
       updateTitle: async (id: string, title: string) => { h.titleUpdates.push({id, title}); },
     });
     impl.users = {

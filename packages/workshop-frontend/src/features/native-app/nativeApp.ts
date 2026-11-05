@@ -1,6 +1,8 @@
 type NativeNotificationBridge = {
   currentDeviceRegistration: () => string | undefined
-  requestDeviceRegistration: () => void
+  authorizationRequired?: boolean
+  requestDeviceRegistration: (authorization?: string) => void
+  disconnect?: () => void
   registrationFinished: (outcome: 'ready' | 'failed') => void
 }
 
@@ -10,6 +12,7 @@ export type CloudflareOSNative = {
   loginReady: () => void
   returnToInstalls: () => void
   notifications?: NativeNotificationBridge
+  authentication?: { open: (id: string, url: string) => void; close: (id: string) => void }
 }
 
 type NativeAppWindow = Window & { cloudflareOSNative?: CloudflareOSNative }

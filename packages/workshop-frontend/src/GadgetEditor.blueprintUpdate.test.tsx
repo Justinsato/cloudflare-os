@@ -5,7 +5,7 @@ import { act, useEffect, type ComponentProps, type ReactElement, type ReactNode 
 import { createRoot, type Root } from 'react-dom/client'
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
-  GadgetMetadata,
+  WorkspaceMetadata,
   GadgetSummary,
   WorkpiecesSubscriber,
 } from '@gadgets/workshop-shared/api'
@@ -47,7 +47,7 @@ const mocks = vi.hoisted(() => {
           subscribeToConsoleLogs: async () => disposable,
         },
       },
-      metadata: { id: 'workspace', title: 'Trips', role: 'build' } as unknown as GadgetMetadata,
+      metadata: { id: 'workspace', title: 'Trips', role: 'build' } as unknown as WorkspaceMetadata,
       error: null,
       connectionLost: false,
       observerConfig: null,
@@ -55,7 +55,10 @@ const mocks = vi.hoisted(() => {
       cancelObserverConfig: () => {},
       updateTitle: () => {},
     },
-    authenticatedApi: { whoami: async () => ({ type: 'user', id: 'dev', name: 'Dev' }) },
+    authenticatedApi: {
+      whoami: async () => ({ type: 'user', id: 'dev', name: 'Dev' }),
+      listWorkspaces: async () => [],
+    },
   }
 })
 
@@ -149,6 +152,7 @@ vi.mock('./components/SiteLogo', () => ({ default: () => null }))
 vi.mock('./components/UserMenu', () => ({ default: () => null }))
 vi.mock('./components/ThemeModeButton', () => ({ default: () => null }))
 vi.mock('./components/WorkspaceOpenErrorPage', () => ({ default: () => null }))
+vi.mock('./features/notifications/WorkspaceNotificationsMenu', () => ({ WorkspaceNotificationsMenu: () => null }))
 
 import GadgetEditor from './GadgetEditor'
 import { isChatVisible } from './features/notifications/visibleChat'

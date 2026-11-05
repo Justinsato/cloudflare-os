@@ -12,6 +12,7 @@
 // user could reach in the Chat UI.
 
 import { AccessTokenProvider, fetchWithAuthRetry } from "./auth-retry";
+import { chatCardsFromRaw } from "./chat-cards";
 import { readGoogleJson } from "./google-response";
 import type {
   ChatAttachmentInfo, ChatListMessagesOptions, ChatListSpacesOptions,
@@ -283,15 +284,27 @@ export type ChatMessageRaw = {
   createTime?: string;
   lastUpdateTime?: string;
   deleteTime?: string;
+  /** Plain text: a link reads as its label and a mention as `@Name`. */
   text?: string;
+  /** `text` in Chat's markup: `<url|label>` links, `<users/{id}>` mentions, `*bold*` and so on. */
+  formattedText?: string;
   thread?: { name?: string };
   space?: { name?: string };
   attachment?: ChatAttachmentRaw[];
+  /** Cards a Chat app attached: untrusted and loosely shaped, so read only by `chatCardsFromRaw`. */
+  cardsV2?: { cardId?: string; card?: unknown }[];
+  /** The legacy card format, which older Chat apps still send. */
+  cards?: unknown[];
   emojiReactionSummaries?: { emoji?: ChatEmojiRaw; reactionCount?: number }[];
   threadReply?: boolean;
   deletionMetadata?: { deletionType?: string };
   /** Set only for an app-authored message visible to one user in an otherwise shared space. */
   privateMessageViewer?: ChatUserRaw;
+  /**
+   * Set only from the `messageId` its creator passed to `messages.create`, as every send from this
+   * gatekeeper does.
+   */
+  clientAssignedMessageId?: string;
   annotations?: { type?: string; userMention?: { user?: ChatUserRaw; type?: string } }[];
 };
 
@@ -415,11 +428,13 @@ export function chatMessageInfoFromRaw(raw: ChatMessageRaw): ChatMessageInfo {
     ...(raw.thread?.name ? { threadId: raw.thread.name } : {}),
     ...(sender ? { sender } : {}),
     text: raw.text ?? "",
+    formattedText: raw.formattedText ?? raw.text ?? "",
     mentions: chatMentionsFromRaw(raw),
     createdAt: createTime ?? new Date(0),
     ...(lastUpdateTime ? { editedAt: lastUpdateTime } : {}),
     isReply: raw.threadReply === true,
     attachments: (raw.attachment ?? []).map(chatAttachmentInfoFromRaw),
+    cards: chatCardsFromRaw(raw),
     reactions: (raw.emojiReactionSummaries ?? []).map(summary => ({
       emoji: chatEmojiFromRaw(summary.emoji),
       count: summary.reactionCount ?? 0,
@@ -927,14 +942,15 @@ export class ChatApi {
       { method: "POST", body: JSON.stringify(body), idempotent: options.requestId !== undefined }));
   }
 
-  /** Returns the text as Chat stored it. */
+  /** Returns the text as Chat stored it, in the `formattedText` form a later read compares against. */
   async updateMessageText(messageName: string, text: string): Promise<string> {
     const { spaceId, messageId } = chatMessageParts(messageName);
     const updated = await this.#request<ChatMessageRaw>(
       "messages.patch",
       `/spaces/${spaceId}/messages/${messageId}?updateMask=text`,
       { method: "PATCH", body: JSON.stringify({ text }), idempotent: true });
-    return updated.text ?? text;
+    // The plain `text` is no substitute: undo and queued edits compare this with `formattedText`.
+    return updated.formattedText ?? (await this.getMessage(messageName)).formattedText;
   }
 
   async deleteMessage(messageName: string): Promise<void> {
