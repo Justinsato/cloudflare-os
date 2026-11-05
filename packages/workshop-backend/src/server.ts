@@ -1,9 +1,9 @@
 import { RpcStub, RpcTarget, newHttpBatchRpcResponse, newWebSocketRpcSession, RpcSessionOptions } from "capnweb";
 import { validateRpc } from "capnweb-validate";
 import type { JWTPayload } from "jose";
-import { PublicApi, AuthenticatedApi, Overseer, GadgetMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, AiModelProvider, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenGadgetError, getOpenGadgetErrorCode, OPEN_GADGET_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, WorkspacePlacement } from "@gadgets/workshop-shared/api";
+import { PublicApi, WorkspacePlacement, ROUTER_TAG_PROBE_PATH, VERSION_PATH, AuthenticatedApi, Overseer, WorkspaceMetadataWithTimestamps, AiChatAuthorInfo, RedactedAiModelConfig, AiGatewayInfo, ModelKind, ConnectedAccountsSubscriber, ConnectedAccountsFilter, GatekeeperVendorFilter, ObserverConfigCallback, BlueprintLibrarySummary, BlueprintPublicInfo, BlueprintUserSummary, BlueprintBindingAssignment, AgentSpawnerConfig, WorkpieceId, BLUEPRINT_SCREENSHOT_PATH_PREFIX, BLUEPRINT_SCREENSHOT_R2_PREFIX, blueprintScreenshotUrl, ServerConfig, CloudflareUsageInfo, CloudflareAccountOption, LoginAttempt, GatekeeperAppInfo, AdminApi, GatekeeperVendorInfo, OutputFormatOffer, ListOutputsResult, UserDirectoryRecord, createOpenWorkspaceError, getOpenWorkspaceErrorCode, OPEN_WORKSPACE_ERROR_CODES, AUTH_ERROR_CODES, createAuthError, ConnectFlowStart, NotificationSubscriber, NotificationMute, WebPushSubscription } from '@gadgets/workshop-shared/api';
 import type { UiFeatureFlags } from "@gadgets/workshop-shared/feature-flags";
-import { getServerConfig } from "./deployment-config.js";
+import { backendVersion, getServerConfig } from "./deployment-config.js";
 import { isPasswordAuthEnabled, getAuthGatekeeperAllowlist } from "./auth/config.js";
 import { getAuthVendorBinding } from "./auth/auth-vendors.js";
 import { getUsageInfo } from "./ai-gateway-billing/limits/usage-checker.js";
@@ -14,13 +14,13 @@ import { deploymentOutputForBlueprint, listFormatOffers, readAdminConfig } from 
 
 // Re-export the optional-feature Durable Objects + entrypoints so they can be bound in wrangler.
 export { PendingLogin, LoginConnectCallbackImpl };
-import { GatekeeperUiFrame } from "@gadgets/workshop-shared/gatekeeper";
+import { GatekeeperUiFrame, GatekeeperUserSelection } from "@gadgets/workshop-shared/gatekeeper";
 import { DecisionModelGatekeeper, LanguageModelGatekeeper } from "./ai-models";
 import { getGatewayModels } from "./ai-gateway.js";
 import { AdminSettings, AdminApiImpl } from "./admin-settings.js";
 import { blueprintContentKey, buildBlueprintArchiveStream, sanitizeBlueprintOutput, parseBlueprintArchive, randomBlueprintId } from "./blueprint-archive.js";
 import { BlueprintKvRecord, listFeaturedBlueprintsFromKv, readBlueprintKvRecord } from "./storage-schema/blueprints-kv.js";
-import { GatekeeperConnectCallbackImpl, normalizeUsername, UserDurableObject, CLOUDFLARE_VENDOR_ID } from "./user";
+import { GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl, normalizeUsername, UserDurableObject, CLOUDFLARE_VENDOR_ID } from "./user";
 import { OverseerDurableObject, GatekeeperLoopback, CodeModeTailLoopback, AgentSpawnerGatekeeper, GatekeeperHookLoopback, GadgetTailLoopback, AgentSelfLoopback } from "./overseer";
 import { UserDirectoryDurableObject } from "./user-directory.js";
 import { ExternalMessageGateway } from "./external-message-gateway";
@@ -31,6 +31,7 @@ import { accessSessionEmail, parseAccessServiceTokenEmails, verifyCfAccessJwt } 
 import { resolveUiFeatureFlags } from "./feature-flags";
 import { serveSiteLogo, SITE_LOGO_PATH } from "./site-logo.js";
 import { createWorkshopLogger } from "./observability";
+import { deployServiceInstall, routerVersionTag } from "./deployment-updates.js";
 import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
 import { isAdminName, readWorkspacePlacements, validatePlacement, validateWorkspaceTitle, writeWorkspacePlacement } from "./workspace-placements.js";
 import { deviceSessionCallback } from "./auth/device-session-callback.js";
@@ -40,6 +41,14 @@ const logger = createWorkshopLogger("workshop.server");
 // Set once we've asked the AdminSettings DO to install the bundled blueprints (see the
 // fetch handler), so later requests skip the call. The DO holds the real answer.
 let bundledBlueprintInstallStarted = false;
+
+// The router version tag this isolate last reported to the AdminSettings DO, when, and the report
+// itself, settling once the DO has recorded it (see the fetch handler), so a request repeating the
+// tag skips the call. The DO keeps whichever report reaches it last, from any isolate, so a repeat
+// is skipped only for ROUTER_TAG_REPORT_INTERVAL_MS: then this isolate reports again, replacing an
+// older tag another isolate's late report stored.
+let routerTagReport: { tag: string, at: number, recorded: Promise<void> } | undefined;
+const ROUTER_TAG_REPORT_INTERVAL_MS = 60_000;
 
 const USER_SEARCH_POLICY_CACHE_TTL_MS = 30_000;
 
@@ -61,7 +70,7 @@ export { AdminSettings };
 export { UserDirectoryDurableObject };
 
 // Re-export entrypoint types from user.ts.
-export { UserDurableObject, GatekeeperConnectCallbackImpl };
+export { UserDurableObject, GatekeeperConnectCallbackImpl, GatekeeperUserSelectionExchangeImpl };
 
 // Re-export entrypoint types from overseer.ts.
 export { OverseerDurableObject, GatekeeperLoopback, GatekeeperHookLoopback,
@@ -183,13 +192,25 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return retryOnDoReset(() => this.#user.getQuickModel());
   }
 
-  registerNotificationDevice(deviceRegistrationId: string): Promise<void> {
-    return this.#user.registerNotificationDevice(deviceRegistrationId);
+  registerNotificationDevice(registration: string | WebPushSubscription): Promise<void> {
+    return this.#user.registerNotificationDevice(registration);
+  }
+
+  registerAuthorizedNotificationDevice(deviceRegistrationId: string): Promise<void> {
+    return this.#user.registerAuthorizedNotificationDevice(deviceRegistrationId);
+  }
+
+  authorizeNotificationDevice(): Promise<string> {
+    return this.#user.authorizeNotificationDevice();
   }
 
   subscribeToNotifications(
       subscriber: RpcStub<NotificationSubscriber>): Promise<RpcStub<{}>> {
     return this.#user.subscribeToNotifications(subscriber);
+  }
+
+  setWorkspaceNotificationMute(workspaceId: string, mute: NotificationMute | null): Promise<void> {
+    return this.#user.setWorkspaceNotificationMute(workspaceId, mute);
   }
 
   getPreferredModel(): Promise<string | null> {
@@ -249,7 +270,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     if (models) {
       return {
         enabled: true,
-        enabledProviders: [...models.providers] as AiModelProvider[],
+        enabledProviders: models.addableProviders,
         builtInModelIds: models.all.map(model => model.id),
         userModelsEnabled: models.userModels,
       };
@@ -262,7 +283,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return resolveUiFeatureFlags(this.env, this.#userId.name!);
   }
 
-  async #openGadgetInternal(id: string, shareKey?: string,
+  async #openWorkspaceInternal(id: string, shareKey?: string,
                             configureObservers?: RpcStub<ObserverConfigCallback>)
       : Promise<NativeRpcStub<Overseer>> {
     let userId = this.#userId.toString();
@@ -271,7 +292,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     try {
       overseerId = this.overseers.idFromString(id);
     } catch {
-      throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotFound);
+      throw createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound);
     }
     let overseer = this.overseers.get(overseerId);
 
@@ -306,8 +327,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
       // A denial proves this user's listing for the workspace is stale: revocation tries to drop it
       // (refreshAffectedCollaboratorListings), but that push is best-effort. Only catches entries
       // they click; others stay frozen at revocation, as a disconnected collaborator gets no pushes.
-      if (getOpenGadgetErrorCode(err) === OPEN_GADGET_ERROR_CODES.workspaceAccessDenied) {
-        await this.#user.forgetSharedGadget(id);
+      if (getOpenWorkspaceErrorCode(err) === OPEN_WORKSPACE_ERROR_CODES.workspaceAccessDenied) {
+        await this.#user.forgetSharedWorkspace(id);
       }
       throw err;
     }
@@ -315,32 +336,32 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return result;
   }
 
-  async openGadget(id: string, shareKey?: string,
-                   configureObservers?: RpcStub<ObserverConfigCallback>)
+  async openWorkspace(id: string, shareKey?: string,
+                      configureObservers?: RpcStub<ObserverConfigCallback>)
       : Promise<RpcStub<Overseer>> {
     // @ts-expect-error Cap'n Web RPC stubs and native RPC stubs are compatible but the type
     //     system doesn't know this.
-    return this.#openGadgetInternal(id, shareKey, configureObservers);
+    return this.#openWorkspaceInternal(id, shareKey, configureObservers);
   }
 
-  async newGadget(): Promise<RpcStub<Overseer>> {
+  async newWorkspace(): Promise<RpcStub<Overseer>> {
     let id = this.overseers.newUniqueId().toString();
-    await this.#user.newGadget(id, "Untitled Workspace");
+    await this.#user.newWorkspace(id, "Untitled Workspace");
     recordAnalytics(this.ctx, this.env, {
       event_name: "gadget_created",
       user_id: this.#userId.toString(),
       gadget_id: id,
       source: "blank",
     });
-    let result = await this.openGadget(id);
+    let result = await this.openWorkspace(id);
     if (!result) {
       throw new Error("Open failed despite newly-created workspace?");
     }
     return result;
   }
 
-  async listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
-    return retryOnDoReset(() => this.#user.listGadgets());
+  async listWorkspaces(): Promise<WorkspaceMetadataWithTimestamps[]> {
+    return retryOnDoReset(() => this.#user.listWorkspaces());
   }
 
   async setWorkspacePinned(workspaceId: string, pinned: boolean): Promise<void> {
@@ -350,12 +371,12 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
   async createWorkspace(title: string): Promise<{id: string, title: string}> {
     let validated = validateWorkspaceTitle(title);
     let id = this.overseers.newUniqueId().toString();
-    await this.#user.newGadget(id, validated);
+    await this.#user.newWorkspace(id, validated);
     await this.overseers.get(this.overseers.idFromString(id))
         .initializeOwnedWorkspace(this.#userId.toString(), validated);
-    // A listed workspace, not a provisional one: newGadget() leaves lastActive unset until the
+    // A listed workspace, not a provisional one: newWorkspace() leaves lastActive unset until the
     // first activity, and the home listing hides it until then.
-    await this.#user.setGadgetLastActive(id, new Date(), undefined);
+    await this.#user.setWorkspaceLastActive(id, new Date(), undefined);
     recordAnalytics(this.ctx, this.env, {
       event_name: "gadget_created",
       user_id: this.#userId.toString(),
@@ -436,8 +457,8 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return this.#user.startCreationConfigurator(accountId, resourceUrlPattern);
   }
 
-  async dismissSharedGadget(gadgetId: string): Promise<void> {
-    return this.#user.forgetSharedGadget(gadgetId);
+  async dismissSharedWorkspace(workspaceId: string): Promise<void> {
+    return this.#user.forgetSharedWorkspace(workspaceId);
   }
 
   async listOwnBlueprints(): Promise<BlueprintUserSummary[]> {
@@ -516,7 +537,7 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     }
   }
 
-  async newGadgetFromBlueprint(
+  async newWorkspaceFromBlueprint(
     blueprintId: string,
     bindings: Record<string, BlueprintBindingAssignment>
   ): Promise<RpcStub<Overseer>> {
@@ -524,10 +545,10 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     let kvRecord = await readBlueprintKvRecord(this.env, blueprintId);
     if (!kvRecord) throw new Error("Blueprint not found.");
 
-    // 2. Create new Overseer DO (same as newGadget()).
+    // 2. Create new Overseer DO (same as newWorkspace()).
     let id = this.overseers.newUniqueId().toString();
-    await this.#user.newGadget(id, kvRecord.metadata.title);
-    let overseerResult = await this.#openGadgetInternal(id);
+    await this.#user.newWorkspace(id, kvRecord.metadata.title);
+    let overseerResult = await this.#openWorkspaceInternal(id);
 
     // 3. Initialize from the blueprint's code. The Overseer reads it for itself, as the version
     //    this metadata describes, so that it is the code the bindings assigned below belong to.
@@ -655,15 +676,25 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
         }));
   }
 
-  async getGatekeeperApp(id: string): Promise<GatekeeperUiFrame | null> {
+  async getGatekeeperApp(vendorId: string): Promise<GatekeeperUiFrame | null> {
     // Self-sufficient: listProvidedAccounts provisions auto-provisioned accounts first (idempotent),
     // so a direct URL load of /gatekeepers/$id works without racing the Header's listGatekeeperApps.
     let user = this.#user;  // one stub for both calls
     let accounts = await user.listProvidedAccounts();
-    let app = accounts.find((account: (typeof accounts)[number]) => account.vendorId === id && account.description.providesUi);
+    let app = accounts.find(account => account.vendorId === vendorId && account.description.providesUi);
     if (!app) return null;
     // isAdmin is supplied fresh per open so admin-gated features reflect the user's current status.
     return user.startAccountAppUi(app.accountId, { isAdmin: this.#isAdmin() });
+  }
+
+  async createGatekeeperUserSelection(
+      vendorId: string, selectedUserId: string,
+  ): Promise<GatekeeperUserSelection | null> {
+    let selector = this.#user;
+    let accounts = await selector.listProvidedAccounts();
+    let app = accounts.find(account => account.vendorId === vendorId && account.description.providesUi);
+    if (!app) throw new Error("No such app.");
+    return selector.createGatekeeperUserSelection(app.accountId, selectedUserId);
   }
 
   // --- Deployment admin ---
@@ -913,8 +944,9 @@ class OperatorSession extends NativeRpcTarget {
     this.#userId = userId;
   }
 
-  listGadgets(): Promise<GadgetMetadataWithTimestamps[]> {
-    return this.#api.listGadgets();
+  // Kept as listGadgets/openGadget: the brick-mcp Worker calls these names over its binding.
+  listGadgets(): Promise<WorkspaceMetadataWithTimestamps[]> {
+    return this.#api.listWorkspaces();
   }
 
   getPreferredModel(): Promise<string | null> {
@@ -936,13 +968,13 @@ class OperatorSession extends NativeRpcTarget {
     return readWorkspacePlacements(this.#env);
   }
 
-  /** Opens a workspace as this user, exactly as AuthenticatedApi.openGadget() does. */
+  /** Opens a workspace as this user, exactly as AuthenticatedApi.openWorkspace() does. */
   async openGadget(id: string): Promise<NativeRpcStub<Overseer>> {
     let overseerId;
     try {
       overseerId = this.#overseers.idFromString(id);
     } catch {
-      throw createOpenGadgetError(OPEN_GADGET_ERROR_CODES.workspaceNotFound);
+      throw createOpenWorkspaceError(OPEN_WORKSPACE_ERROR_CODES.workspaceNotFound);
     }
     // The browser path passes a callback that aborts its WebSocket when the DO drops; a binding
     // call has no session to abort, so the callback only satisfies open().
@@ -984,6 +1016,38 @@ export class OperatorApi extends WorkerEntrypoint<Env, OperatorApiProps> {
 export default {
   async fetch(req: Request, env: Env, ctx: ExecutionContext) {
     let url = new URL(req.url);
+
+    // Read on every request, off the critical path: a failure only means the next request reports
+    // it again. Only the update status of a deployment the deploy flow installed reads the tag, so
+    // any other deployment skips the call. A session's RPCs travel over one WebSocket, so the
+    // browser POSTs to ROUTER_TAG_PROBE_PATH before reading the status, which answers once this
+    // isolate's report of the tag it carries is recorded, whichever request started that report.
+    let routerTag = routerVersionTag(req.headers);
+    let now = Date.now();
+    if (routerTag !== undefined && deployServiceInstall(env) !== null &&
+        (routerTag !== routerTagReport?.tag ||
+            now - routerTagReport.at >= ROUTER_TAG_REPORT_INTERVAL_MS)) {
+      let recorded = ctx.exports.AdminSettings.getByName("").recordRouterTag(routerTag)
+          .catch((err: unknown) => {
+            if (routerTagReport === report) routerTagReport = undefined;
+            logger.warn("failed to record the router's version tag", {
+              event: "deployment.router-tag.record.failed", error: err,
+            });
+          });
+      let report = { tag: routerTag, at: now, recorded };
+      routerTagReport = report;
+      ctx.waitUntil(recorded);
+    }
+    if (url.pathname === ROUTER_TAG_PROBE_PATH && req.method === "POST") {
+      if (routerTag !== undefined && routerTagReport?.tag === routerTag) {
+        await routerTagReport.recorded;
+      }
+      return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+    }
+    if (url.pathname === VERSION_PATH && req.method === "GET") {
+      return Response.json({ version: backendVersion(env) ?? null },
+          { headers: { "Cache-Control": "no-store" } });
+    }
 
     if (url.pathname === SITE_LOGO_PATH) {
       return serveSiteLogo(req, env.BLUEPRINT_CONTENT);

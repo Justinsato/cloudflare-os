@@ -24,27 +24,22 @@ The ambient binding exposes `ScheduleSession`. The exact agent-facing contract a
 [`src/types.d.ts`](src/types.d.ts).
 
 ```ts
-import { restore } from "cloudflare:workers";
-
-export default async function(self, env) {
-  const callback = await env.MY_GADGET[restore]({ type: "dailyBrief" });
-
-  const scheduleId = await env.SCHEDULER.calendarAt(
-    {
-      timeZone: "America/Chicago",
-      freq: "weekly",
-      byDay: ["MO", "TU", "WE", "TH", "FR"],
-      hour: 8,
-      minute: 0,
-    },
-    callback,
-    {
-      title: "Daily brief",
-      description: "Prepare the morning calendar and inbox brief.",
-      occurrences: { count: 10 },
-    },
-  );
-}
+// executeCode, where `callback` is a persistent stub for the params `{ type: "dailyBrief" }`
+const scheduleId = await env.SCHEDULER.calendarAt(
+  {
+    timeZone: "America/Chicago",
+    freq: "weekly",
+    byDay: ["MO", "TU", "WE", "TH", "FR"],
+    hour: 8,
+    minute: 0,
+  },
+  callback,
+  {
+    title: "Daily brief",
+    description: "Prepare the morning calendar and inbox brief.",
+    occurrences: { count: 10 },
+  },
+);
 ```
 
 Use the three registration methods according to the user's intent:
@@ -81,8 +76,8 @@ does not expose schedules from other workspaces in the account.
 ## Persistent callbacks and retries
 
 Callbacks implement `ScheduledTaskHook.onSchedule()` and must be made persistent before
-registration: `env.MY_GADGET[restore](params)` from `executeCode`, or `this.ctx.restore(params)`
-inside the Gadget. Each firing contains:
+registration: `this.ctx.restore(params)` inside the Gadget, or through the Gadget's binding from
+`executeCode`, as the agent's instructions on persistent stubs describe. Each firing contains:
 
 - `scheduleId`, the stable registration ID;
 - `runId`, stable across retries of one logical occurrence;
@@ -163,6 +158,9 @@ the alarm. Bounded batches limit ordinary load; they do not eliminate that trade
 The Scheduler is capability-authorized. It does not receive Workshop user identity, assert its own
 ambient policy, expose external network authority, or implement actions. The Workshop's existing hook
 admission and observation authorization remain the security boundaries.
+
+Observers follow the low-stakes policy: `list()` and each delivery report `subresources: []`, and
+`addObserver` and `verifyObserverAccess` admit every collaborator.
 
 ## Limits
 

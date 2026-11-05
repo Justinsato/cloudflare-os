@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { env, RpcStub as NativeRpcStub } from "cloudflare:workers";
 import { runInDurableObject } from "cloudflare:test";
-import type { AiChatAuthorInfo, GadgetMetadata, Overseer } from "@gadgets/workshop-shared/api";
+import type { AiChatAuthorInfo, WorkspaceMetadata, Overseer } from "@gadgets/workshop-shared/api";
 import {
   isWorkspaceHomeTitle, moveGadget, normalizeGadgetOrder, sortByGadgetOrder,
 } from "@gadgets/workshop-shared/gadget-order";
@@ -14,7 +14,7 @@ declare module "cloudflare:workers" {
   }
 }
 
-// The saved gadget display order (GadgetMetadata.gadgetOrder): stored on the real Overseer over
+// The saved gadget display order (WorkspaceMetadata.gadgetOrder): stored on the real Overseer over
 // real storage, opened as the owner. The owner's user DO is faked.
 
 const OWNER_USER_ID = "owner-user-do";
@@ -103,7 +103,7 @@ describe("gadget order storage", () => {
     await withWorkspace(async ({ impl, client }) => {
       let [a, b] = await createGadgets(impl, client, 2);
       let seen: (number[] | undefined)[] = [];
-      using callback = new NativeRpcStub((metadata: GadgetMetadata) => {
+      using callback = new NativeRpcStub((metadata: WorkspaceMetadata) => {
         seen.push(metadata.gadgetOrder && [...metadata.gadgetOrder]);
       });
       // @ts-expect-error Native RpcStub stands in for the capnweb stub type.

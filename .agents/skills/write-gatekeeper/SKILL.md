@@ -27,7 +27,7 @@ Read `packages/workshop-shared/src/gatekeeper.ts` for the canonical interfaces a
 
 6. **Simulation** — Actions submitted but not yet applied should be simulated as if they already occurred, to the maximum extent reasonable. If the caller reads back data, it should observe the data as if pending actions had been applied, even though they haven't yet. This allows the agent to continue working without waiting for each approval, and allows the end user to batch-approve a lot of work at once. Simulation may leverage caching (updating the cache on submit, clearing or repopulating it on reject), or it may work by storing pending actions separately and adjusting read results at query time — the latter is arguably cleaner but trickier to implement correctly. See Phase 2 for implementation guidance.
 
-7. **Observer verification** — When a Gadget is shared, collaborators may "observe" data the Gadget previously read through the gatekeeper. The gatekeeper must ensure each collaborator could access that data themselves, via `getVerifier()` / `addObserver()` / `removeObserver()`. The interface methods are mandatory — a gatekeeper won't type-check without them — so include at least minimal versions in Phase 1; but *choosing and implementing the right strategy* is a Phase 2 security concern, like logging/approvals. See [Observer verification](#observer-verification).
+7. **Observer verification** — When a Gadget is shared, collaborators may "observe" data the Gadget previously read through the gatekeeper. The gatekeeper must ensure each collaborator could access that data themselves: per observation, either by reporting what the read depends on as `subresources` and answering the Workshop's access checks (`verifyObserverAccess()`), or via its own `addObserver()` / `removeObserver()` tracking, which keeps covering every read that omits them. `getVerifier()` / `addObserver()` / `removeObserver()` are mandatory — a gatekeeper won't type-check without them — so include at least minimal versions in Phase 1; but *choosing and implementing the right strategy* is a Phase 2 security concern, like logging/approvals. See [Observer verification](#observer-verification).
 
 ## Phase 1: Core implementation
 
@@ -68,7 +68,7 @@ The agent receives the `.d.ts` text **verbatim** (via the `types.txt` symlink), 
 
 Present the proposed `types.d.ts` and explain the design: what resource granularities are supported, what Session methods do, and what trade-offs were made. The API is the most important and delicate part of a gatekeeper — getting it wrong means rebuilding. Wait for the operator to review and approve (or request changes) before continuing.
 
-Also confirm the JSDoc follows [Documenting the API](#documenting-the-api-typesdts) — no approval-queue or implementation details leaked in.
+Also confirm the JSDoc follows [Documenting the API](#documenting-the-api-typesdts) — no approval-queue or implementation details leaked in, and run the [API review](#reviewing-a-gatekeeper) on your own design first.
 
 ### Step 4: Implement
 
@@ -94,24 +94,30 @@ There is no binding to add. `run-dev-server.ts` binds every `packages/gatekeeper
 
 ### Step 6: Add resource selection UI
 
-Add a resource selection UI for each resource type returned in `getSupportedResources()`. This will be used by users to select the specific resource.
+Add a resource selection UI for each connect card. A card is one resource type returned in `getSupportedResources()`, together with any types whose `groupedWith` names it. This will be used by users to select the specific resource.
 
-- Workshop calls `GatekeeperUser.startResourceConfigurator(resourceUrlPattern)` with the selected resource's `urlPattern`.
+- Workshop calls `GatekeeperUser.startResourceConfigurator(resourceUrlPattern)` with the `urlPattern` of a type on the card: the card's own type from the connect dialog, or a binding's own type from a blueprint. Return the card's configurator for every type on it.
 - Return `iframeHtml` of the selection UI and `ui` for any RPCs that UI needs.
 - When the user selects "Add connection", Workshop asks the iframe for the selected resource URL.
+- Group types (`SupportedResource.groupedWith`) when they are one choice found in one place, such as a whole drive, a folder, a file, or a document in it. Each type is still granted separately, and a grouped card asks for the missing ones in one consent request, so a user connecting any type on the card is asked for every type on it; group types that need different authorization only when that is acceptable. The gatekeeper's `getGatekeeperClassFor` decides which type a returned URL is, while Workshop's grant check takes the first type in declaration order whose pattern matches it, so declare a narrower type before a broader one whose pattern also matches its URLs. A whole-instance `https://*` type is the exception: the check skips it and uses it only for a URL no other type on the card matches, so it can be declared anywhere.
 
 Keep the iframe-facing capability narrow, only what's necessary to provide desired interface to help user find and select the resource.
 
 #### Optional helper: `@gadgets/configurator-ui`
 
-For simple configuration UIs, consider using `@gadgets/configurator-ui`. It provides the basic form components that look consistent to the Gadget Workshop and a build script that turns `src/configurator/*-ui.tsx` into `iframeHtml`. Gatekeepers with more specialized UI needs can produce their own `iframeHtml`.
+For configuration UIs, use `@gadgets/configurator-ui`. It provides form components built on Kumo (rendered with Preact standing in for React inside the frame) that look and behave like the rest of the Workshop, and a build that turns `src/configurator/*-ui.tsx` into `iframeHtml`. Gatekeepers whose needs the components cannot meet can produce their own `iframeHtml`.
+
+Components: `Section`, `Field`, `TextInput`, `RadioCards`, `CheckboxList` (multi-select; refuses more than 200 options rather than truncating), `Autocomplete` (search-as-you-type, one result), `HierarchyPicker` (choose the whole hierarchy from a card above the list, or an open container or a leaf from its own row; as in a file dialog, a choice lasts while it is in view; a container's `choice` says what connecting it grants, since only the gatekeeper knows whether that is its whole subtree, and a node's `unselectableReason` says why it cannot be connected; breadcrumbs with a back button, optional search, paging and `loadItem`, which pre-filling anything but the root needs; optional `tabs` split what lies below the root into top-level containers or views, each listed with its id as `parentId` and heading the `path` of every node under it, and offered as a choice only with `selectable: true`; nodes name icons the configurator supplies in `icons`, and may carry a `badge`, at the end of the title's line, and a `meta`, at the end of the subtitle's; a location that cannot be listed yet, such as one waiting on a grant, returns a page with `unavailable` set to why, shown with Retry like a failed load but not reported as an error, while a page's `notice` tells the user something about a listing it can show, such as that it is partial or why it is empty), `Button` (an action in the form; call the render context's `ensureResources` from its click to ask for access the next step needs) and `Notice` (an inline info or error message, announced to screen readers; its `action` puts the one step the message leads to, such as allowing access, in the same row, so prefer it to a Notice followed by a Button, and keep Buttons for a choice between steps). The runtime strips control and bidi-formatting characters from titles, subtitles and meta it shows, since those come from third parties.
 
 If you use this:
 
 - UI modules live in `src/configurator/*-ui.tsx`.
 - `resourceUrl()` returns the selected resource URL.
+- A module that can return several types reads `acceptedResourceUrlPatterns` from the context every callback receives (`render`, `isReady`, `resourceUrl`, `initialValuesFromResourceUrl`): the types Workshop will take, which leave out a grouped type the account hasn't granted and anything a blueprint binding doesn't want. Show other types if that helps the user find their way, but don't let them be chosen, and keep `isReady` false while one is. It is `undefined` from an older Workshop, which takes any type. The list is read when the frame starts, and Workshop restarts the frame when it changes.
 - `src/configurator/*-types.d.ts` describes the iframe-facing `ui` API.
-- `scripts/build-gatekeeper-configurator.ts` generates `src/generated/*.txt`.
+- Each module is compiled on its own: it may import only `@gadgets/configurator-ui` and types. URL grammar it shares with the server is copied, and a test keeps the copies in step.
+- The frame's content security policy allows exactly the scripts the build wrote (by hash) and no network access; anything the UI needs goes through `ui`.
+- `scripts/build-gatekeeper-configurator.ts` generates `src/generated/*.txt`, using the runtime and build in `packages/configurator-ui` (`src/runtime/`, `build/`).
 - Nothing invokes `build-gatekeeper-configurator.ts` by hand. `vite.config.ts` re-exports the
   shared `build` and `build:configurator` Vite+ tasks from
   `scripts/gatekeeper-configurator-vite-config.ts`; `build` is just `tsc` and depends on
@@ -135,7 +141,7 @@ When something already knows the exact resource — most importantly an AI agent
   },
   ```
 
-  The runtime seeds these values before first render and reflects them in `Autocomplete`/`TextInput`/`RadioCards` inputs. Make sure your `resourceUrl(values)` and `initialValuesFromResourceUrl(url)` are inverses so a prefilled form round-trips to the same URL. **Every gatekeeper with selectable resources should support this** so agents can fully pre-configure a connection.
+  The runtime seeds these values before first render and reflects them in `Autocomplete`/`TextInput`/`RadioCards`/`HierarchyPicker` inputs. Make sure your `resourceUrl(values)` and `initialValuesFromResourceUrl(url)` are inverses so a prefilled form round-trips to the same URL. **Every gatekeeper with selectable resources should support this** so agents can fully pre-configure a connection.
 
 ### Step 7: STOP — Ask operator whether to proceed to phase 2
 
@@ -169,7 +175,7 @@ Do **not** call `authorizeObservation()` for:
 
 Returning a boolean or count *is* data when that is the answer the caller asked for (`isFollowing()`, `areTracksSaved()`, a `null` from `getArea()` meaning "no area"). Log those.
 
-**Exception: observer tracking.** Under observer strategy C (below), `authorizeObservation()` does more than log. Its `excludeObservers` and set-tracking side effects gate which collaborators may see the workspace, and `containsRestrictedData` / `ownerInvitesOnly` change workspace state. A call that carries any of these is a security control, and removing it is a security decision, not a logging cleanup (see the Drive session's "Check Google Drive folder" fences).
+**Exception: observer tracking.** Some observation fields do more than log. `subresources` is what collaborators are verified against; under legacy strategy C (below), `excludeObservers` and the set-tracking side effects gate which collaborators may see the workspace; and `containsRestrictedData` / `ownerInvitesOnly` change workspace state. A call that carries any of these (for `subresources`, a non-empty list) is a security control, and removing it is a security decision, not a logging cleanup (see the Drive session's "Check Google Drive folder" fences).
 
 It's critically important that you add `ApprovalQueue` to all API operations that interact with the outside world, otherwise the gatekeeper security model is broken.
 
@@ -206,15 +212,20 @@ For concrete examples, see the Google gatekeeper's Google Docs simulation/cache 
 
 This is responsibility 7. When a Gadget is shared, each non-owner collaborator becomes an **observer** of every gatekeeper bound to the Gadget, and may see data the Gadget previously read. The gatekeeper's job is to refuse — or forward-restrict — observers who couldn't access that data themselves.
 
-Three methods implement this (full JSDoc in `gatekeeper.ts`):
+Two mechanisms check observers, chosen **per observation**, and a collaborator must pass both:
+
+- **Kernel-checked subresources.** An observation that reports the IDs it depends on as `ObservationDescription.subresources` (on the one `authorizeObservation()` method) is checked by the Workshop: it records the IDs against the chat or gadget whose binding made the read, checks every collaborator who can see that context through `Gatekeeper.verifyObserverAccess()` before authorizing the read, and checks the recorded IDs again on each collaborator's open. The gatekeeper keeps no observer state for such reads. Prefer it for new gatekeepers and read paths; every existing gatekeeper is expected to migrate to it. See [Reporting subresources](#reporting-subresources).
+- **Legacy.** An observation that omits `subresources` is checked by nothing in the Workshop beyond `excludeObservers`; the gatekeeper tracks observers itself through `addObserver()` / `removeObserver()` and, for strategy C, `excludeObservers`. One gatekeeper may mix both, path by path.
+
+Three methods are mandatory (full JSDoc in `gatekeeper.ts`):
 
 - `GatekeeperUser.getVerifier()` — mints a `GatekeeperUserVerifier` (a persistent service stub) representing *this* user's account. The overseer mints one per open and **only ever passes it back to a gatekeeper of the same vendor**, so the gatekeeper may trust whatever it learns from it.
-- `Gatekeeper.addObserver(id, verifier)` — must **throw** if the user represented by `verifier` is not allowed to observe everything read through this gatekeeper so far. The overseer calls it on **every open by every authorized observer** (re-verification, so revoked access is caught at the next open); cache as needed if the check is expensive. `id` is an opaque, stable per-(user,gadget) string.
-- `Gatekeeper.removeObserver(id)` — idempotent; drop a tracked observer.
+- `Gatekeeper.addObserver(id, verifier)` — Must **throw** if the user represented by `verifier` is not allowed to observe everything read through this gatekeeper so far that it tracks itself: reads that omit `subresources`, and whatever it recorded before it began reporting them. The overseer calls it on **every open by every authorized observer**, for every connection (re-verification, so revoked access is caught at the next open); cache as needed if the check is expensive. `id` is an opaque, stable per-(user,gadget) string.
+- `Gatekeeper.removeObserver(id)` — Idempotent; drop a tracked observer.
 
 #### The verifier "non-standard method" pattern
 
-`GatekeeperUserVerifier` has no methods of its own — it's an opaque token. To actually answer "can this observer access X?", define a vendor-specific interface that **extends `GatekeeperUserVerifier`** with your own methods, implement it on a `WorkerEntrypoint` that queries the service using the **observer's own token**, and cast the `Fetcher` back to that interface inside `addObserver`. The overseer's same-vendor guarantee is what makes the cast safe.
+`GatekeeperUserVerifier` has no methods of its own — it's an opaque token. To actually answer "can this observer access X?", define a vendor-specific interface that **extends `GatekeeperUserVerifier`** with your own methods, implement it on a `WorkerEntrypoint` that queries the service using the **observer's own token**, and cast the `Fetcher` back to that interface inside `addObserver` or `verifyObserverAccess`. The overseer's same-vendor guarantee is what makes the cast safe.
 
 ```typescript
 // In types/impl: a verifier interface with non-standard methods.
@@ -253,16 +264,38 @@ async getVerifier(): Promise<Fetcher<GatekeeperUserVerifier>> {
 
 Strategy is chosen **per `Gatekeeper` DO class / binding**, not per package — one package may use several (e.g. Google: Gmail=A, Doc=B, BigQuery=C).
 
-- **A — Private-only.** `addObserver()` always throws; `removeObserver()` is a no-op. `getVerifier()` must still exist (the overseer mints it) but is never consulted. Use when the resource is too sensitive to share and there is no per-observer access oracle (e.g. a personal Gmail mailbox). For truly sensitive data, also mark each observation with `ObservationDescription.containsRestrictedData: true`: because nobody can open the workspace without passing `addObserver()`, and with strategy A nobody ever does, the first such observation makes the workspace effectively unshareable — and it permanently sets the workspace's `containsRestrictedData` flag, whose restricted mode blocks all actions and public web fetches, so the data cannot leak back out through other gatekeepers.
+- **A — Private-only.** `addObserver()` always throws; `removeObserver()` is a no-op. `getVerifier()` must still exist (the overseer mints it) but is never consulted. Use when the resource is too sensitive to share and there is no per-observer access oracle (e.g. a personal Gmail mailbox). For truly sensitive data, also mark each observation with `ObservationDescription.containsRestrictedData: true`: because nobody can open the workspace without passing `addObserver()`, and with strategy A nobody ever does, the first such observation makes the workspace effectively unshareable — and it permanently sets the workspace's `containsRestrictedData` flag, whose restricted mode blocks all actions and limits web fetches to the hosts an admin trusts, so the data cannot leak back out through other gatekeepers.
 - **B — ACL check (single unit).** The binding is one atomic resource; sub-resources inherit its ACL. `addObserver()` calls a verifier method to confirm the observer can access it and throws otherwise; `removeObserver()` is a no-op; nothing is tracked and no `excludeObservers` is ever needed. Use for repo / document / page / team / single-project bindings.
 - **C — Data-set tracking.** The binding spans sub-resources with **distinct ACLs**, and there is a **per-observer access oracle** for each. The DO logs the data sets actually observed and the current observers; `addObserver()` verifies the observer against **every** logged set (plus a coarse membership baseline) and **stores their verifier**; each later observation that first touches a **new** set re-checks all stored observers and sets `excludeObservers` for any who fail. Use for workspace / organization / dataset-spanning bindings.
 - **D — Low-stakes.** `addObserver()` / `removeObserver()` are no-ops; `getVerifier()` returns a trivial verifier with a no-op public method such as `verify(): void {}` (an empty `WorkerEntrypoint` is not registered in `ctx.exports`). Use when any collaborator may observe (personal, low-stakes services).
 
 The **B-vs-C decision** (the "broad binding" lens): use C only when **both** (1) the binding spans sub-resources with distinct ACLs *and* (2) there's a per-observer oracle to check each against. If one ACL covers everything → B. If there's no oracle → A or D.
 
-#### Implementing strategy C
+The strategy is the same choice for a read that reports `subresources`, where it decides what it reports. A binding-wide requirement (the B resource's single ACL, C's coarse org or workspace membership) stays in `addObserver()`, which runs at every admission whether or not anything was recorded:
 
-Route **every data-revealing observation** through a helper that takes the set id(s) the observation reveals, instead of calling `authorizeObservation()` directly:
+- **A** — an owner-only ID (for example, one naming the owner's external user) that `verifyObserverAccess()` grants only to an observer whose verifier is that same user. Keep marking truly sensitive observations `containsRestrictedData: true`.
+- **B** — `[]`: everything the read depends on is the binding-wide requirement.
+- **C** — the ID of every sub-resource the read revealed; `[]` for a read that reveals none.
+- **D** — `[]`.
+
+#### Reporting subresources
+
+The JSDoc on `ObservationDescription.subresources` and `Gatekeeper.verifyObserverAccess()` in `gatekeeper.ts` is the contract (ID rules and limits, the answer format). Absent means legacy; `[]` means nothing restricts the read. Convert one session / cursor / hook path at a time:
+
+1. **Report `subresources` on each converted read path**, hook deliveries included: the IDs of everything the disclosure depends on that might restrict who may see it (`[]` when nothing does) beyond the binding-wide requirement `addObserver()` keeps checking (see the mapping above). Make each ID carry everything your `verifyObserverAccess()` needs, and keep its meaning stable across versions; encoding a tuple avoids delimiter collisions (the integration fixture reports `JSON.stringify([resourceUrl, localId])`). Route converted reads through your own read helper that makes `subresources` **required**: a converted path that forgets it is treated as legacy, not refused.
+2. **Implement `verifyObserverAccess(observers, subresources)`.** Check each observer's verifier through your vendor's non-standard methods (as `addObserver()` does) and return the IDs of those whose account can read **every** ID; throw when access can't be determined. Check in bulk where the service allows; because one call covers a read's audience, the check may also read the resource's ACL once with the connection's own credentials and compare each observer's identity. Don't store the verifiers or cache verdicts by observer ID, since the same observer can come back with another account.
+3. **Keep `addObserver()` enforcing** the binding-wide requirement, everything recorded before the conversion, and every path not yet converted. A path may stop its legacy bookkeeping (observed sets, stored verifiers, `excludeObservers`) only once it reports `subresources`; until then it stays fully legacy-enforced.
+
+What changes for the gatekeeper:
+
+- **No observer state for converted reads.** The Workshop attributes each such read, checks its audience, and closes the races between observations and opens. `excludeObservers` may still accompany `subresources`; both are enforced.
+- **Registrations made before the upgrade keep working.** Hook controllers and other persistent stubs stored by an earlier version keep the `props` they were minted with, and their hooks keep firing after the upgrade. Decide what a read reports from the binding's current state, never from props or stored fields an earlier version did not write.
+
+`docs/observers.md` §10 describes the Workshop's side in full. The integration fixture's "reports subresources" mode (`packages/integration-tests/fixtures/gatekeeper-test/src/test-gatekeeper.ts`) is a minimal working example; the Context Library (`packages/gatekeeper-context`) is the first shipping gatekeeper to report them, converting a strategy-C binding with gatekeeper-kit's `subresources` scope and `observerAccessVerifier`. Scheduled Tasks (`packages/gatekeeper-scheduler`) and Web Search (`packages/gatekeeper-websearch`) report `[]` on every read, as strategy D.
+
+#### Implementing strategy C (legacy protocol)
+
+This applies to reads that omit `subresources`; a converted read reports each set as a subresource instead. Route **every data-revealing observation** through a helper that takes the set id(s) the observation reveals, instead of calling `authorizeObservation()` directly:
 
 ```typescript
 // On the Gatekeeper DO. `setIds` are the data sets this observation reveals.
@@ -330,6 +363,18 @@ Because the callback is a persistent stub tied to a session, the gatekeeper neve
 
 When defining a session interface with hooks, it's important to include comments that clearly state when a method expects to be passed a *persistent* stub created with `ctx.restore()`, as opposed to a regular RpcStub. The caller needs to do extra work to make sure the stub they provide you is persistent.
 
+## Reviewing a gatekeeper
+
+Reviews tend to stop at general correctness. The most important review is of the agent-facing API, so pressure-test it:
+
+- **Shape.** Read `types.d.ts` as the agent does, as its only documentation. Does the shape make sense? What would you do differently?
+- **User stories.** List the most common things a user would ask an agent to do with this service and walk each through the API. Flag any that are impossible, need sequential round trips that promise pipelining can't remove, or need knowledge the JSDoc doesn't give. Flag dead ends too: anything the grant includes that the agent can't navigate to, such as child pages it can list but not open.
+- **Seams.** Check that resource types, bindings and sessions partition authority along the lines users actually grant:
+  - Each `getSupportedResources()` granularity is a grant a user would make, and together they cover the common ones (broad and narrow).
+  - A narrow binding's session reaches nothing outside its resource: sub-resources come from stubs on their parent, and no method or option field (`parentId`, `projectId`) takes an ID that escapes the binding.
+  - Each method sits on the object whose authority it needs. A cross-resource operation (move, copy, link) must not quietly require, or grant, a broader binding than the user picked.
+  - Each binding's types expose only what that binding can do and stay small, and its observer strategy fits how the binding is partitioned (see [Choosing a strategy](#choosing-a-strategy-per-resource-type--binding)).
+
 ## Tips
 
 - `types.txt` must be a **symlink** to `types.d.ts`, never a copy. Because it is delivered verbatim, `types.d.ts` must not import from other modules — inline any shared types (see [Documenting the API](#documenting-the-api-typesdts)).
@@ -341,7 +386,7 @@ When defining a session interface with hooks, it's important to include comments
 - All DO classes must appear in `cloudflare.config.ts`'s `migrations` export under `new_sqlite_classes`.
 - Set a self-destruct alarm in `UserAccount.setCallback()` in case the OAuth flow is never completed.
 - `authorizeObservation()` may be called *after* fetching data (so the description can include details about what was fetched) but must be awaited *before* returning anything to the caller.
-- `getVerifier()` / `addObserver()` / `removeObserver()` are **mandatory** — the gatekeeper won't type-check without them. Even a read-only or push-only gatekeeper needs them (sharing is independent of whether the gatekeeper has actions). Pick a strategy per [Observers](#observer-verification): a low-stakes one can be A or D; otherwise B/C.
+- `getVerifier()` / `addObserver()` / `removeObserver()` are **mandatory** — the gatekeeper won't type-check without them. Even a read-only or push-only gatekeeper needs them (sharing is independent of whether the gatekeeper has actions). Pick a strategy per [Observers](#observer-verification): a low-stakes one can be A or D; otherwise B/C. Reads that report `subresources` need `verifyObserverAccess()` (see [Reporting subresources](#reporting-subresources)), and `addObserver()` must keep enforcing everything those reads don't cover.
 
 ## Reference implementations
 
@@ -351,4 +396,7 @@ When defining a session interface with hooks, it's important to include comments
 - `packages/gatekeeper-gitlab/` — A **mirror** of gatekeeper-github for a provider with instance configuration (self-hosted URLs, an optional Cloudflare Access service token on upstream requests) and **rotating credentials** (expiring access tokens, single-use refresh tokens refreshed under a mutex). Reads the same `plans/worktrees.md` §3 git contract through `gatekeeper-kit`'s `git-transport`/`git-objects`/`git-diff`. **Observers:** strategy B with a role-aware probe (`membershipGrantsFullRead`): Reporter membership whatever the visibility, since a public project can still hold confidential issues and internal notes, read from `members/all?user_ids[]=` because the project's `permissions` object omits group-inherited access. Its `plans/gitlab-gatekeeper.md` divergence table is a worked example of porting one gatekeeper's API to another provider's vocabulary.
 - `packages/gatekeeper-supabase/` — **Observers:** strategy C with a per-session context object (`authorizeProjectObservation`) — good when sessions already hold a shared context.
 - `packages/gatekeeper-linear/` & `packages/gatekeeper-notion/` — **Observers:** strategy C where the page/team session impls are shared between the narrow (B) and broad (C) bindings, threading an `observe` hook through sub-sessions; both also handle one observation revealing multiple sets.
-- `packages/workshop-shared/src/gatekeeper.ts` — Canonical interfaces with detailed JSDoc (`getVerifier`, `addObserver`, `removeObserver`, `GatekeeperUserVerifier`, `ObservationDescription.excludeObservers`).
+- `packages/integration-tests/fixtures/gatekeeper-test/` — **Observers:** a "reports subresources" mode that reports qualified `subresources` on reads and hook firings, and a `verifyObserverAccess()` that asks each observer's verifier through a non-standard method, alongside its unchanged binding-wide `addObserver()`.
+- `packages/gatekeeper-context/` — **Observers:** a strategy-C binding converted to subresources with gatekeeper-kit: every read uses the `subresources` scope, `verifyObserverAccess()` is `observerAccessVerifier` over the tracker's oracle, and the tracker stays for the collections recorded before conversion.
+- `packages/gatekeeper-scheduler/` & `packages/gatekeeper-websearch/` — **Observers:** strategy D reporting subresources: every read and hook firing reports `[]`, and `addObserver()` and `verifyObserverAccess()` admit every observer.
+- `packages/workshop-shared/src/gatekeeper.ts` — Canonical interfaces with detailed JSDoc (`getVerifier`, `addObserver`, `removeObserver`, `GatekeeperUserVerifier`, `Gatekeeper.verifyObserverAccess`, `ObservationDescription.subresources` and `ObservationDescription.excludeObservers`).

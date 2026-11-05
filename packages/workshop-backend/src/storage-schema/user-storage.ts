@@ -7,7 +7,7 @@
 import { createTypedStorage, collection } from "@gadgets/typed-storage";
 import type {
   AiChatAuthorInfo, AiModelConfig, BlueprintMetadata, BlueprintOutput,
-  GadgetMetadata, WorkpieceId,
+  WorkspaceMetadata, WorkpieceId,
 } from "@gadgets/workshop-shared/api";
 import type { AccountDescription, GatekeeperUser } from "@gadgets/workshop-shared/gatekeeper";
 import type { DeviceSessionHandoff } from "../auth/device-session-handoff.js";
@@ -56,6 +56,19 @@ export type PendingConnectFlow = {
   expiresAt: Date;
 };
 
+/**
+ * A user selected on behalf of a gatekeeper app that is currently awaiting
+ * redemption by that account. Keyed by the SHA-256 of the single-use ticket and
+ * swept by the User DO alarm after `expiresAt`.
+ */
+type PendingGatekeeperUserSelection = {
+  ticketHash: string;
+  appAccountId: number;
+  vendorId: string;
+  selectedUserId: string;
+  expiresAt: Date;
+};
+
 export type UserAiModelRecord = {
   profile: AiChatAuthorInfo;
   config: AiModelConfig;
@@ -100,11 +113,11 @@ type LibraryBlueprintRecord = {
   uploaded: boolean;
 };
 
-export type GadgetRecord = GadgetMetadata & {
+export type GadgetRecord = WorkspaceMetadata & {
   created: Date;
   lastActive?: Date;  // if missing, gadget is provisional
   // If we're not the gadget owner (it was shared with us), `owner` is set (inherited from
-  // GadgetMetadata).
+  // WorkspaceMetadata).
 };
 
 /**
@@ -164,6 +177,9 @@ export function makeUserStorage(storage: DurableObjectStorage) {
       }),
       pendingDeviceHandoffs: collection<PendingDeviceHandoffRecord>()({
         primaryKey: "stateHash",
+      }),
+      pendingUserSelections: collection<PendingGatekeeperUserSelection>()({
+        primaryKey: "ticketHash",
       }),
       blueprints: collection<BlueprintUserRecord>()({
         primaryKey: "id",

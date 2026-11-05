@@ -11,6 +11,7 @@ import HomePriorities from "../components/AppShell/HomePriorities";
 import HomeEntities from "../components/AppShell/HomeEntities";
 import { siteConfig } from "../siteConfig";
 import { useSiteTheme } from "../useWorkspaceTheme";
+import { UpdateAvailableNotice } from "../features/deployment-updates/UpdateAvailableNotice";
 import { useAuthenticatedApi } from "../AuthContext";
 import { RpcStub } from "capnweb";
 import {
@@ -106,7 +107,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
 
   const ensureProvisionalGadget = useCallback(() => {
     if (!provisionalOverseerRef.current) {
-      const overseer = authenticatedApi.newGadget();
+      const overseer = authenticatedApi.newWorkspace();
       provisionalOverseerRef.current = { stub: overseer };
     }
   }, [authenticatedApi]);
@@ -183,6 +184,7 @@ export function HomePageContent({ prompt }: HomeSearch) {
         sketch ? "pt-14" : "pt-10 sm:pt-16 lg:pt-24"
       }`}
     >
+      <UpdateAvailableNotice />
       {home ? (
         // A deployment with its own Home gets its own backdrop: a faint brand-tinted field and a
         // hairline grid that fade out above the composer, in place of the upstream hex mesh.

@@ -56,6 +56,13 @@ export type GatekeeperRecord = {
   creationSpec?: GatekeeperCreationSpec;
 
   /**
+   * Present on agent spawners only: the bindings given to each agent the spawner starts, keyed
+   * by binding name. Seeded from the AgentSpawnerConfig.env the spawner was created with, then
+   * edited like a gadget's (see GadgetRecord.bindings), and read when an agent is spawned.
+   */
+  bindings?: Record<string, BindingRecord>;
+
+  /**
    * OBSOLETE: Before we had support for multiple gadgets per workspace, the binding name and
    * blueprint annotation information lived on the GatekeeperRecord. These properties continue
    * to be declared only to support migrating them away. The version 0 -> 1 migration copies
@@ -65,6 +72,16 @@ export type GatekeeperRecord = {
   bindingName?: string;
   blueprintAnnotation?: StoredBlueprintBindingAnnotation;
 };
+
+/**
+ * The vendor a connection belongs to, as its creationSpec names it (case preserved, as account
+ * selection and the User DO's getVerifier() expect it). Undefined for vendorless records
+ * (aiModel/agentSpawner) and legacy ones with no creationSpec.
+ */
+export function connectionVendorId(record: GatekeeperRecord | undefined): string | undefined {
+  let spec = record?.creationSpec;
+  return spec && "vendorId" in spec ? spec.vendorId : undefined;
+}
 
 /**
  * A stored blueprint annotation. Those written while the UI still offered an exclusion control
@@ -79,10 +96,21 @@ export type StoredBlueprintBindingAnnotation = BlueprintBindingAnnotation & {inc
  * in place, only replaced by minting a new stub (as the version 0 -> 1 migration does).
  */
 export type AgentSpawnerBindingProps = {
-  /** ID of the overseer under which this agent should run. */
-  overseerId: string,
+  /**
+   * OBSOLETE: ID of the overseer under which this agent should run. Present on stubs minted
+   * before version 6, but nothing reads it anymore: a spawn now finds its overseer through the
+   * gatekeeper session (see AgentSpawnerQueueImpl). Declared only so the name is not reused.
+   */
+  overseerId?: string,
 
-  config: AgentSpawnerConfig,
+  config: Omit<AgentSpawnerConfig, "env"> & {
+    /**
+     * OBSOLETE: The spawner's bindings as of its creation, baked into stubs minted before
+     * version 6. A spawner's bindings now live in `GatekeeperRecord.bindings`, which is what a
+     * spawn reads, so this copy is stale. Declared only so the name is not reused.
+     */
+    env?: AgentSpawnerConfig["env"],
+  },
 
   /**
    * DO ID of the user who created this binding. When agents are spawned, the model is
@@ -102,8 +130,9 @@ export type AgentSpawnerBindingProps = {
 export type LegacyAgentSpawnerConfig = Omit<AgentSpawnerConfig, "env"> & {env?: string[]};
 
 /**
- * A binding edge from one gadget to a target workpiece (today always a gatekeeper), stored in
- * GadgetRecord.bindings keyed by binding name.
+ * A binding edge from a gadget or agent spawner to a target workpiece, stored in
+ * GadgetRecord.bindings or GatekeeperRecord.bindings keyed by binding name. A gadget's targets
+ * are gatekeepers; a spawner's may also be gadgets.
  */
 export type BindingRecord = {
   target: WorkpieceId;
@@ -122,8 +151,9 @@ export type BindingRecord = {
    * edge-for-edge via the "changes" message's `addedBindings`). A pending edge is real in the
    * registry so the originating chat's own preview/test runs see it, but for *reads* everything
    * else (mainline loads, other chats, blueprints, "use"-role sharing) treats it as nonexistent.
-   * For *writes* it still occupies its name: another chat attempting to add the same name on
-   * this gadget fails with an explicit error until this chat's changes are accepted or reverted.
+   * A spawner's pending edge reaches no agent at all, since spawned agents run in chats of
+   * their own. For *writes* it still occupies its name: another chat attempting to add the same
+   * name fails with an explicit error until this chat's changes are accepted or reverted.
    */
   pending?: {chatId: number, sequence?: number};
 };
@@ -385,7 +415,9 @@ export type GatekeeperCaller = {
   /**
    * Which gadget made the call. Optional for backward compatibility: callers embedded in
    * ActionRecords persisted before multi-gadget support have no gadgetId. `defaultGadgetId`
-   * should be assumed when `gadgetId` is absent.
+   * should be assumed when `gadgetId` is absent -- except by observer tracking, which refuses
+   * such a caller (see observerContextOf): the default gadget can change, and attribution must
+   * not.
    */
   gadgetId?: WorkpieceId;
 } | {
@@ -393,6 +425,14 @@ export type GatekeeperCaller = {
   chatId?: number;
 } | {
   from: "hook";
+
+  /**
+   * The gadget the firing hook wakes: its BoundHookRecord's `gadgetId`, or the `defaultGadgetId`
+   * that resolved to when it fired. Observer tracking attributes the firing's observations to it
+   * (see observerContextOf). Absent when neither names a gadget, and on records written before
+   * firings carried it.
+   */
+  gadgetId?: WorkpieceId;
 };
 
 export type ActionRecord = {
@@ -444,6 +484,15 @@ export type ActionRecord = {
   autoApproved?: boolean;         // set when applied by an auto-approval rule rather than a human
 } | {
   type: "observation";
+
+  /**
+   * `subresources` is kept only on an observation the Workshop verified them for: it writes the
+   * validated list, and strips the field from a pending creation's simulated read. Kept, it makes
+   * the record an observer requirement, attributed by `caller` (see observerContextOf and
+   * ObserverLedger.observerScope). Nothing else stores requirements, which is why the
+   * action log is append-only: deleting such a record would silently drop checks while its
+   * connection still exists.
+   */
   description: ObservationDescription;
 } | {
   type: "bindHook";
@@ -479,9 +528,10 @@ export type BoundHookRecord = {
   gatekeeperId: WorkpieceId;
 
   /**
-   * The gadget whose code this hook wakes. Bookkeeping only -- used to display which gadget a
-   * hook belongs to and to delete a gadget's hooks when the gadget is deleted. Operationally the
-   * `callback` already encapsulates OverseerRestoreParams pointing at the correct gadget.
+   * The gadget whose code this hook wakes: shown as the hook's gadget, deleted with it, and
+   * trusted for its "use" scope and the attribution of its firings (see GatekeeperCaller).
+   * Operationally the `callback` encapsulates its own OverseerRestoreParams, which an agent-bound
+   * hook's inferred gadgetId (see OverseerImpl.bindHook) can rarely mismatch; that is accepted.
    * If omitted, use `defaultGadgetId`.
    */
   gadgetId?: WorkpieceId;
@@ -601,9 +651,10 @@ export type AiChatAgentContext = {
    * and all gatekeepers which those gadgets bind to, but the contents may be different depending
    * on how the chat thread was started (e.g. agent spawners initialize env in a specific way).
    *
-   * This map is frozen after the chat starts. "changes" messages in the chat log may introduce
-   * new bindings, but they aren't added here; instead, the chat log must be replayed to find out
-   * the current binding set.
+   * This map is fixed after the chat starts, except that a chat not spawned takes in each ambient
+   * gatekeeper the workspace gains later (see `alwaysAvailableCapsuleIds`). "changes" messages in
+   * the chat log may introduce new bindings, but they aren't added here; instead, the chat log must
+   * be replayed to find out the current binding set.
    *
    * This is absent for chats created before named chat bindings existed; such chats are seeded
    * lazily at their next turn start.
@@ -614,7 +665,8 @@ export type AiChatAgentContext = {
   bindings?: Record<string, WorkpieceId>;
 
   /**
-   * Gatekeeper IDs for ambient capsules which were instantiated into this chat when it started.
+   * Gatekeeper IDs for ambient capsules instantiated into this chat: those the workspace had when
+   * the chat started, then, for a chat not spawned, each one it gained later, in that order.
    * This array predates the creation of per-chat named bindings; back then, ambient gatekeepers
    * were delivered as numbered "capsules", occupying the lowest numbers in the capsules array, and
    * this array specified their order. But with the advent of per-chat named bindings, these are now
@@ -624,6 +676,12 @@ export type AiChatAgentContext = {
    * that).
    */
   alwaysAvailableCapsuleIds?: WorkpieceId[];
+
+  /** Chat-private Git worktree for uploads, plans, and other agent working files. */
+  scratch?: {worktreeId: WorkpieceId, bindingName: string};
+
+  /** Legacy originals have been published as blobs and projected into this chat's scratch worktree. */
+  attachmentsMigrated?: true;
 
   /**
    * The part of the agent's system prompt that lists the workspace's gadgets, each with its files
@@ -653,10 +711,12 @@ export type AiChatAgentContext = {
    * CompactionCheckpoint's list instead when it has one.
    *
    * Like `workspacePrompt`, this keeps the system prompt the same when a catalog changes, e.g. when
-   * someone adds a skill to the Context Library. A catalog never changes from inside the chat, so
-   * the agent is told instead: before each model request it compares the current catalogs with the
-   * ones it last saw, and records a "catalogChange" message for those that differ. A catalog that
-   * failed to load is not a change. A resource the chat can no longer reach drops out of the list.
+   * someone adds a skill to the Context Library, or when the chat gains a resource, e.g. when the
+   * owner turns on Web Search. Neither happens from inside the chat, so the agent is told instead:
+   * before each model request it compares the current resources with the ones it last saw, and
+   * records a "catalogChange" message for those that are new or whose catalog differs. A catalog
+   * that failed to load is not a change. A resource the chat can no longer reach drops out of the
+   * list.
    */
   alwaysAvailableResources?: AlwaysAvailableResource[];
 };
@@ -685,6 +745,13 @@ export type CompactionCheckpoint = {
 
   /** The summary the model wrote. We send it as one user message before the retained messages. */
   summary: string;
+
+  /**
+   * The `compaction` block Anthropic returned when it wrote `summary`, as JSON (see
+   * anthropic-compaction.ts). Turns on a model that can read it send it unchanged in place of the
+   * summary message; other models get the summary text.
+   */
+  anthropicCompactionBlock?: string;
 
   /**
    * The list of the workspace's gadgets that the system prompt shows after this checkpoint, built
@@ -756,9 +823,9 @@ export type CompactionCheckpoint = {
 
 /**
  * Server-only record describing an in-progress agent turn, enabling resumption after a server
- * restart. Keyed by chatId. A record is present (mirroring `chatMeta.activeAgent`) for exactly as
- * long as an agent turn is, or should be, running. On startup, the set of these records identifies
- * which agents were interrupted by a restart and need to be resumed.
+ * restart. Keyed by chatId. `chatMeta.activeAgent` identifies runnable records; a paused turn
+ * retains its record (and original authority) until its logged decisions are ready. No separate
+ * wait state is stored: the chat log already contains the requests and their outcomes.
  *
  * Note we deliberately do NOT store the resolved `AiModelConfig` here, because it contains a secret
  * API token. Instead we store enough to re-fetch it from the initiator's user DO on resume.
@@ -776,6 +843,8 @@ export type ActiveAgentRecord = {
   initiator: AiChatAuthorInfo;
   /** Whether this turn was initiated by a gadget callback (vs. a chat message). */
   callbackInitiated: boolean;
+  /** Model-lookup attempts since the last successful preparation, bounded across DO resets. */
+  resumeAttempts?: number;
 };
 
 /**
@@ -862,17 +931,26 @@ export type ExternalChatRecord = {
 type ChatAttachmentContentRecord = {
   fileId: string;
   data: Uint8Array;
-  state:
-    | {
-        type: "staged";
-        uploadedAt: number;
-        mimeType: string;
-        name?: string;
-      }
-    | {
-        type: "committed";
-        chatId: number;
-      };
+  state: {
+    type: "staged";
+    uploadedAt: number;
+    mimeType: string;
+    name?: string;
+  };
+} | {
+  fileId: string;
+  /** Retained for inline image previews and legacy attachments committed before Git ingress. */
+  data?: Uint8Array;
+  state: {
+    type: "committed";
+    chatId: number;
+    /** Original upload blob; new uploads keep no separate attachment byte copy. */
+    oid?: string;
+    /** Path in the chat's scratch worktree, independent of the uploaded file's format. */
+    workspacePath?: string;
+    /** Legacy immutable Git source commit for replay and download. */
+    workspaceCommitId?: string;
+  };
 };
 
 // =======================================================================================
@@ -1092,6 +1170,67 @@ export type ObserverRecord = {
   accountChoices: { [gatekeeperId: number]: number };
 };
 
+/**
+ * What an observer requirement is attached to: the workspace (requirements with no
+ * narrower trusted attribution, which every chat and gadget includes), one chat, or one gadget.
+ */
+export type ObserverContext =
+  | {type: "workspace"}
+  | {type: "chat", chatId: number}
+  | {type: "gadget", gadgetId: WorkpieceId};
+
+/**
+ * The context an observation by `caller` is attributed to: its trusted binding authorizer's chat
+ * or gadget, the gadget a firing hook wakes, or the workspace for a hook naming no gadget and a
+ * user acting outside any chat. Undefined for gadget callers persisted without a gadgetId.
+ *
+ * The actions `byObserverRequirement` index stores this mapping's result when each record is
+ * written, so changing an existing attributed mapping requires reindexing its observations keeping
+ * `subresources`.
+ */
+export function observerContextOf(caller: GatekeeperCaller): ObserverContext | undefined {
+  switch (caller.from) {
+    case "agent": return {type: "chat", chatId: caller.chatId};
+    case "user":
+      return caller.chatId !== undefined ? {type: "chat", chatId: caller.chatId} : {type: "workspace"};
+    case "gadget":
+      return caller.gadgetId !== undefined ? {type: "gadget", gadgetId: caller.gadgetId} : undefined;
+    case "hook":
+      return caller.gadgetId !== undefined
+          ? {type: "gadget", gadgetId: caller.gadgetId} : {type: "workspace"};
+  }
+}
+
+// Leads the part of an observer requirement key naming its context's type.
+const OBSERVER_CONTEXT_TAGS = {workspace: "w", chat: "c", gadget: "g"} as const;
+
+/**
+ * `listKeys()` prefix selecting the actions `byObserverRequirement` keys through `gatekeeperId` on
+ * every context of type `contexts`.
+ */
+export function observerRequirementPrefix(
+    gatekeeperId: WorkpieceId, contexts: ObserverContext["type"]): string {
+  return `${keyString(gatekeeperId)}:${OBSERVER_CONTEXT_TAGS[contexts]}`;
+}
+
+/**
+ * Key of the actions `byObserverRequirement` index: one per subresource of an observer
+ * requirement, led by its connection and context (see observerRequirementPrefix()) and ending
+ * with the subresource itself (see observerRequirementSubresource()). The connection and context
+ * parts are colon-free and colon-terminated, so they never run into the subresource.
+ */
+export function observerRequirementKey(
+    gatekeeperId: WorkpieceId, context: ObserverContext, subresource: string): string {
+  let id = context.type === "chat" ? keyString(context.chatId)
+      : context.type === "gadget" ? keyString(context.gadgetId) : "";
+  return `${observerRequirementPrefix(gatekeeperId, context.type)}${id}:${subresource}`;
+}
+
+/** The subresource an observerRequirementKey() names: everything after its second colon. */
+export function observerRequirementSubresource(key: string): string {
+  return key.slice(key.indexOf(":", key.indexOf(":") + 1) + 1);
+}
+
 // =======================================================================================
 // Blueprints
 
@@ -1190,6 +1329,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       //       where the chat log still told: those an agent created from a blueprint name it,
       //       and those created from scratch name none. Every gadget created from here on has
       //       an `upstream` once it is permanent.
+      //   6 = agent spawners' bindings are GatekeeperRecord.bindings edges; their creationSpec
+      //       config no longer carries `env`.
       version: 0,
 
       // The workspace title. (Each chat, gatekeeper, and gadget has its own title, elsewhere.)
@@ -1245,9 +1386,10 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       // deadWorktreeIds: <WorkpieceId[]>[],
 
       // True if any past observation was authorized that had the `containsRestrictedData` flag
-      // set in its `ObservationDescription`. While set, public-web fetches are refused and every
-      // action pends for manual approval (autoApprovalRule never fires); the approver checks the
-      // action text for restricted data. The key on disk predates the flag's rename.
+      // set in its `ObservationDescription`. While set, web fetches reach only the hosts in
+      // `AdminConfig.restrictedWebFetchHosts`, and every action pends for manual approval
+      // (autoApprovalRule never fires); the approver checks the action text for restricted data.
+      // The key on disk predates the flag's rename.
       containsRestrictedData: singleton(false, {storageKey: "prohibitAllSharing"}),
 
       // True if any past observation was authorized that had the `ownerInvitesOnly` flag set in
@@ -1349,7 +1491,9 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
       actions: collection<ActionRecord>()({
         primaryKey: "id",
 
-        // All three indexes are backfilled by the version-3 migration.
+        // The first three indexes are backfilled by the version-3 migration;
+        // byObserverRequirement needs none: no gatekeeper reported subresources before the
+        // Workshop enforced them, so no earlier observation is a requirement.
         uniqueIndexes: {
           // Resume-replay index (see subscribeToActions): keyed by last state-change time so a
           // reconnect replays only the records changed during the gap.
@@ -1368,6 +1512,23 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
           // read. The "all" filter has no key: it reads the collection itself.
           byHistoryFilter(record: ActionRecord) {
             return record.state === "pending" ? ["pending", record.type] : record.type;
+          },
+
+          // Sparse index over the observer requirements: one key per subresource of each
+          // observation through a real connection that kept `subresources` (see ActionRecord),
+          // led by the connection and the context its caller attributes it to. Admission lists
+          // only the distinct keys (see ObserverLedger.observerScope), never the records
+          // under them, so its cost follows distinct requirements, not repeated reads.
+          byObserverRequirement(record: ActionRecord): string[] {
+            let subresources = record.type === "observation" && record.gatekeeperId >= 0
+                ? record.description.subresources : undefined;
+            let context = subresources ? observerContextOf(record.caller) : undefined;
+            if (!subresources || !context) return [];
+            let keys = new Set<string>();
+            for (let id of subresources) {
+              keys.add(observerRequirementKey(record.gatekeeperId, context, id));
+            }
+            return [...keys];
           },
         }
       }),
@@ -1521,9 +1682,8 @@ export function makeOverseerStorage(storage: DurableObjectStorage) {
         primaryKey: "id"
       }),
 
-      // Attachment bytes. Before an attachment is committed to a chat message, this also carries
-      // the temporary metadata needed to construct its ChatAttachmentRef. Once committed, the
-      // message owns that metadata and this record retains only the bytes and owning chat ID.
+      // Chat-scoped attachment source metadata. New uploads point to immutable Git blobs;
+      // legacy records can still hold staged or committed bytes.
       chatAttachmentContent: collection<ChatAttachmentContentRecord>()({
         primaryKey: "fileId",
         nonUniqueIndexes: {
