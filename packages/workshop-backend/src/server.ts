@@ -453,6 +453,55 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return {id, title, report};
   }
 
+  async repairWorkspaceCopy(copyId: string, sourceId: string, options: {forUser?: string} = {})
+      : Promise<{id: string, reminted: string[], report: WorkspaceCopyReport}> {
+    for (let id of [copyId, sourceId]) {
+      if (typeof id !== "string" || !/^[0-9a-f]{64}$/.test(id)) {
+        throw new Error("Not a workspace id.");
+      }
+    }
+    let ownerId = this.#userId;
+    if (options.forUser !== undefined) {
+      if (!this.#isAdmin()) {
+        throw new Error("Only an admin can repair a workspace in another user's account.");
+      }
+      let username = options.forUser.trim().toLowerCase();
+      if (!/^\S+$/.test(username)) {
+        throw new Error("forUser must be the user's sign-in email or username.");
+      }
+      ownerId = this.users.idFromName(username);
+      let profile = await retryOnDoReset(() => this.users.get(ownerId).whoamiIfExists());
+      if (!profile) throw new Error(`${username} has not signed in to this OS yet.`);
+    }
+
+    let source = await this.openWorkspace(sourceId);
+    let template;
+    try {
+      template = await source.exportWorkspaceTemplate();
+    } finally {
+      source[Symbol.dispose]();
+    }
+
+    // A copy's ambient connections fail when the owner's account for that vendor is a dead stub;
+    // replace those first, so the rebind below runs on accounts that answer.
+    let vendors = new Set<string>();
+    for (let gadget of template.gadgets) {
+      for (let binding of Object.values(gadget.bindings)) {
+        if (binding.kind === "ambient") vendors.add(binding.vendorId);
+      }
+    }
+    let reminted: string[] = [];
+    let owner = this.users.get(ownerId);
+    for (let vendorId of vendors) {
+      let result = await retryOnDoReset(() => owner.remintDeadAmbientAccount(vendorId));
+      if (result?.reminted) reminted.push(vendorId);
+    }
+
+    let report = await this.overseers.get(this.overseers.idFromString(copyId))
+        .rebindFromTemplate(ownerId.toString(), template);
+    return {id: copyId, reminted, report};
+  }
+
   listOutputs(): Promise<ListOutputsResult> {
     return this.#user.listOutputs();
   }
@@ -1017,6 +1066,12 @@ class OperatorSession extends NativeRpcTarget {
   copyWorkspace(sourceId: string, options?: {title?: string, forUser?: string})
       : Promise<{id: string, title: string, report: WorkspaceCopyReport}> {
     return this.#api.copyWorkspace(sourceId, options);
+  }
+
+  /** As AuthenticatedApi.repairWorkspaceCopy(); `forUser` needs the operator to be an admin. */
+  repairWorkspaceCopy(copyId: string, sourceId: string, options?: {forUser?: string})
+      : Promise<{id: string, reminted: string[], report: WorkspaceCopyReport}> {
+    return this.#api.repairWorkspaceCopy(copyId, sourceId, options);
   }
 
   /** As AuthenticatedApi.setWorkspacePlacement(); the operator must be an admin. */

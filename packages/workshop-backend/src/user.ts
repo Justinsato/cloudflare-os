@@ -1479,6 +1479,43 @@ export class UserDurableObject extends DurableObject<Cloudflare.Env> {
     await this.#createAutoProvisionedAccount(vendorId, vendor);
   }
 
+  /**
+   * Brick: replace this user's auto-provisioned account for `vendorId` when it is dead, i.e. its
+   * stub no longer answers because the Worker that minted it is gone (a gatekeeper moved to
+   * another Worker). A live account is never touched, so no one's data is dropped: it must fail
+   * describe() on every try. Returns the account the user now holds and whether it was re-minted.
+   * Reached only through AuthenticatedApi.repairWorkspaceCopy.
+   */
+  async remintDeadAmbientAccount(vendorId: string)
+      : Promise<{accountId: number, reminted: boolean} | null> {
+    vendorId = vendorId.toLowerCase();
+    let record = [...this.#connectedAccountRecords()].find(
+        rec => rec.autoProvisioned && rec.vendorId === vendorId);
+    if (!record) return null;
+
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        await record.account.describe();
+        return {accountId: record.id, reminted: false};
+      } catch (err) {
+        lastError = err;
+      }
+    }
+
+    let vendor = this.vendors.get(vendorId);
+    if (!vendor) throw new Error("No such service: " + vendorId);
+    this.storage.connectedAccounts.delete(record.id);
+    logger.warn("dead ambient account replaced", {
+      event: "account.ambient.reminted", vendorId, accountId: record.id, error: lastError,
+    });
+    await this.#createAutoProvisionedAccount(vendorId, vendor);
+    let fresh = [...this.#connectedAccountRecords()].find(
+        rec => rec.autoProvisioned && rec.vendorId === vendorId);
+    if (!fresh) throw new Error(`Could not re-mint the "${vendorId}" account.`);
+    return {accountId: fresh.id, reminted: true};
+  }
+
   // The email this user signed in with, when the Workshop verified it: a Cloudflare Access or
   // authentication-gatekeeper sign-in, where the verified email is the profile id and keys this DO.
   // Password accounts carry a chosen username instead, so they get none.

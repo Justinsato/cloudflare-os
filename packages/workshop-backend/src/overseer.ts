@@ -2559,6 +2559,20 @@ class OverseerImpl implements AgentHooks {
       gadgets: template.gadgets.map(g => g.title), bound: [], unbound: [],
       hooksNotCopied: template.hookCount,
     };
+    await this.#bindFromTemplate(template, ids, report);
+
+    this.logger.info("workspace built from template", {event: "workspace.copy.built"});
+    return report;
+  }
+
+  // Brick: bind a copy's gadgets as the source binds them (see buildFromTemplate). `ids[i]` is the
+  // copy's gadget for template gadget i, or undefined when it has none. A binding name the gadget
+  // already has is left alone, so this also rebinds what an earlier copy left unbound.
+  async #bindFromTemplate(template: WorkspaceTemplate, ids: (WorkpieceId | undefined)[],
+                          report: WorkspaceCopyReport): Promise<void> {
+    let ownerId = this.ownerId;
+    if (!ownerId) throw new Error("Workspace has no owner.");
+    let owner = () => this.ownerUserDo();
     // One connection per distinct resource, shared by every gadget that binds it, as in the source.
     let made = new Map<string, Promise<WorkpieceId>>();
     let once = (key: string, make: () => Promise<WorkpieceId>) => {
@@ -2572,7 +2586,14 @@ class OverseerImpl implements AgentHooks {
     let ambientReady = false;
 
     for (let [i, gadget] of template.gadgets.entries()) {
+      let own = ids[i];
       for (let [name, binding] of Object.entries(gadget.bindings)) {
+        if (own === undefined) {
+          report.unbound.push({gadget: gadget.title, binding: name,
+              reason: "This workspace has no gadget matching it."});
+          continue;
+        }
+        if (this.getGadgetRecord(own).bindings[name]) continue;
         try {
           let target: WorkpieceId;
           if (binding.kind === "gadget") {
@@ -2632,7 +2653,7 @@ class OverseerImpl implements AgentHooks {
             throw new Error(`Agent spawner "${binding.title}" is not copied; ask the agent to ` +
                 `set it up again.`);
           }
-          this.bindWorkpiece(ids[i], name, target);
+          this.bindWorkpiece(own, name, target);
           report.bound.push({gadget: gadget.title, binding: name, kind: binding.kind});
         } catch (err) {
           report.unbound.push({gadget: gadget.title, binding: name,
@@ -2640,8 +2661,45 @@ class OverseerImpl implements AgentHooks {
         }
       }
     }
+  }
 
-    this.logger.info("workspace built from template", {event: "workspace.copy.built"});
+  // Brick: bind what a copy of `template` is still missing, on the owner's accounts as they are
+  // now (AuthenticatedApi.repairWorkspaceCopy). The copy's gadgets are matched to the template's
+  // in sidebar order when the titles line up, else by title where the title is unique.
+  async rebindFromTemplate(template: WorkspaceTemplate): Promise<WorkspaceCopyReport> {
+    if (!this.ownerId) throw new Error("Workspace has no owner.");
+    let gadgets = [...this.storage.gadgets.list()].filter(
+        (g): g is GadgetRecord => g.type === "gadget" && !g.pending);
+    let order = this.storage.gadgetOrder.get();
+    let rank = (id: WorkpieceId) => {
+      let i = order.indexOf(id);
+      return i < 0 ? order.length + id : i;
+    };
+    gadgets.sort((a, b) => rank(a.id) - rank(b.id));
+
+    let ids: (WorkpieceId | undefined)[];
+    if (gadgets.length === template.gadgets.length &&
+        gadgets.every((g, i) => g.title === template.gadgets[i].title)) {
+      ids = gadgets.map(g => g.id);
+    } else {
+      let byTitle = new Map<string, WorkpieceId[]>();
+      for (let g of gadgets) byTitle.set(g.title, [...byTitle.get(g.title) ?? [], g.id]);
+      let templateCount = new Map<string, number>();
+      for (let g of template.gadgets) {
+        templateCount.set(g.title, (templateCount.get(g.title) ?? 0) + 1);
+      }
+      ids = template.gadgets.map(g => {
+        let mine = byTitle.get(g.title);
+        return mine?.length === 1 && templateCount.get(g.title) === 1 ? mine[0] : undefined;
+      });
+    }
+
+    let report: WorkspaceCopyReport = {
+      gadgets: template.gadgets.map(g => g.title), bound: [], unbound: [],
+      hooksNotCopied: template.hookCount,
+    };
+    await this.#bindFromTemplate(template, ids, report);
+    this.logger.info("workspace copy rebound", {event: "workspace.copy.rebound"});
     return report;
   }
 
@@ -11642,6 +11700,19 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
     // Listed at once, like a workspace the agent or the portal creates (see createWorkspace).
     await owner.setWorkspaceLastActive(this.ctx.id.toString(), new Date(), undefined);
     return report;
+  }
+
+  /**
+   * Brick: bind what this copy of `template` is still missing (AuthenticatedApi.repairWorkspaceCopy).
+   * Reachable only from a Worker binding the Overseer namespace. `ownerUserId` must be this
+   * workspace's owner, which the caller has already checked is who the repair is for.
+   */
+  async rebindFromTemplate(ownerUserId: string, template: WorkspaceTemplate)
+      : Promise<WorkspaceCopyReport> {
+    if (this.impl.ownerId !== ownerUserId) {
+      throw new Error("That workspace isn't owned by the user being repaired.");
+    }
+    return await this.impl.rebindFromTemplate(template);
   }
 
   /**

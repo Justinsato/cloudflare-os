@@ -258,6 +258,76 @@ describe("buildFromTemplate", () => {
   });
 });
 
+describe("rebindFromTemplate", () => {
+  async function exported(): Promise<WorkspaceTemplate> {
+    let template!: WorkspaceTemplate;
+    await inWorkspace(async impl => {
+      await buildSource(impl);
+      template = await impl.exportTemplate();
+    });
+    return template;
+  }
+
+  it("binds what an earlier copy left unbound and leaves the rest alone", async () => {
+    let template = await exported();
+    await inWorkspace(async impl => {
+      fakeOwner(impl);
+      // The first copy runs while the owner's pkm account is dead: no ambient record appears.
+      let ensure = impl.ensureAmbientCapsules;
+      impl.ensureAmbientCapsules = async () => {};
+      let first = await impl.buildFromTemplate(template);
+      expect(first.unbound.map((u: any) => u.binding)).toEqual(["PKM", "SLACK", "REVIEWER"]);
+      let rentRoll = [...impl.storage.gadgets.list()].find((g: any) => g.title === "Rent Roll");
+      let sheetBefore = rentRoll.bindings.SHEET.target;
+
+      impl.ensureAmbientCapsules = ensure;
+      let report = await impl.rebindFromTemplate(template);
+      expect(report.bound).toEqual([{ gadget: "Rent Roll", binding: "PKM", kind: "ambient" }]);
+      expect(report.unbound.map((u: any) => u.binding)).toEqual(["SLACK", "REVIEWER"]);
+
+      rentRoll = impl.getGadgetRecord(rentRoll.id);
+      expect(impl.storage.gatekeepers.get(rentRoll.bindings.PKM.target).creationSpec)
+          .toEqual({ type: "ambient", vendorId: "pkm", accountId: 41 });
+      expect(rentRoll.bindings.SHEET.target).toBe(sheetBefore);
+    });
+  });
+
+  it("matches gadgets by unique title when the order has changed", async () => {
+    let template = await exported();
+    await inWorkspace(async impl => {
+      fakeOwner(impl);
+      let ensure = impl.ensureAmbientCapsules;
+      impl.ensureAmbientCapsules = async () => {};
+      await impl.buildFromTemplate(template);
+      impl.storage.gadgetOrder.put(impl.storage.gadgetOrder.get().toReversed());
+      impl.ensureAmbientCapsules = ensure;
+      let report = await impl.rebindFromTemplate(template);
+      expect(report.bound).toEqual([{ gadget: "Rent Roll", binding: "PKM", kind: "ambient" }]);
+    });
+  });
+
+  it("reports the source's bindings for a gadget the copy no longer has", async () => {
+    let template = await exported();
+    await inWorkspace(async impl => {
+      fakeOwner(impl);
+      await impl.buildFromTemplate(template);
+      let rentRoll = [...impl.storage.gadgets.list()].find((g: any) => g.title === "Rent Roll");
+      rentRoll.title = "Renamed";
+      impl.storage.gadgets.put(rentRoll);
+      let report = await impl.rebindFromTemplate(template);
+      expect(report.bound).toEqual([]);
+      expect(report.unbound.filter((u: any) => u.gadget === "Rent Roll").map((u: any) => u.reason))
+          .toEqual(Array(5).fill("This workspace has no gadget matching it."));
+    });
+  });
+
+  it("refuses a caller that names someone other than the owner",
+      () => inWorkspace(async (_impl, instance) => {
+    await expect(instance.rebindFromTemplate("someone-else",
+        { title: "T", gadgets: [], hookCount: 0 })).rejects.toThrow(/isn't owned by/);
+  }));
+});
+
 describe("exportWorkspaceTemplate", () => {
   async function openAs(instance: OverseerDurableObject, role: "build" | "use"): Promise<Overseer> {
     let impl = (instance as unknown as { impl: any }).impl;
