@@ -747,6 +747,17 @@ export interface AuthenticatedApi extends RpcTarget {
       : Promise<{id: string, title: string, report: WorkspaceCopyReport}>;
 
   /**
+   * Brick: bind what the copy `copyId` of workspace `sourceId` is still missing, on its owner's
+   * accounts as they are now, and report what was bound and what still isn't. Before binding,
+   * replaces any of the owner's auto-provisioned accounts that the source binds and that are
+   * dead (their minting Worker is gone); a live account is never replaced. The caller needs
+   * build access to the source. `options.forUser` (admins only) names the copy's owner when it
+   * isn't the caller; the copy must belong to that user.
+   */
+  repairWorkspaceCopy(copyId: string, sourceId: string, options?: {forUser?: string})
+      : Promise<{id: string, reminted: string[], report: WorkspaceCopyReport}>;
+
+  /**
    * List the outputs of all the user's workspaces. Used to display the Outputs page, which lets
    * the user find things they made without remembering which workspace they made them in.
    *
