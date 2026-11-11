@@ -2663,6 +2663,29 @@ class OverseerImpl implements AgentHooks {
     }
   }
 
+  // Brick: remove the gadgets with these exact titles (AuthenticatedApi.removeCopyGadgets). A
+  // title matching more than one gadget removes none of them and is reported as ambiguous.
+  async removeGadgetsByTitle(titles: string[])
+      : Promise<{removed: {id: WorkpieceId, title: string}[], notFound: string[], ambiguous: string[]}> {
+    let gadgets = [...this.storage.gadgets.list()].filter(
+        (g): g is GadgetRecord => g.type === "gadget" && !g.pending);
+    let result = {removed: [] as {id: WorkpieceId, title: string}[],
+        notFound: [] as string[], ambiguous: [] as string[]};
+    for (let title of new Set(titles)) {
+      let matches = gadgets.filter(g => g.title === title);
+      if (matches.length === 0) {
+        result.notFound.push(title);
+      } else if (matches.length > 1) {
+        result.ambiguous.push(title);
+      } else {
+        await this.removeWorkpiece(matches[0].id);
+        result.removed.push({id: matches[0].id, title});
+      }
+    }
+    this.logger.info("workspace copy gadgets removed", {event: "workspace.copy.gadgets_removed"});
+    return result;
+  }
+
   // Brick: bind what a copy of `template` is still missing, on the owner's accounts as they are
   // now (AuthenticatedApi.repairWorkspaceCopy). The copy's gadgets are matched to the template's
   // in sidebar order when the titles line up, else by title where the title is unique.
@@ -11706,6 +11729,18 @@ export class OverseerDurableObject extends DurableObject<Cloudflare.Env> {
    * Brick: bind what this copy of `template` is still missing (AuthenticatedApi.repairWorkspaceCopy).
    * Reachable only from a Worker binding the Overseer namespace. `ownerUserId` must be this
    * workspace's owner, which the caller has already checked is who the repair is for.
+   */
+  async removeGadgetsByTitle(ownerUserId: string, titles: string[])
+      : Promise<{removed: {id: WorkpieceId, title: string}[], notFound: string[], ambiguous: string[]}> {
+    if (this.impl.ownerId !== ownerUserId) {
+      throw new Error("That workspace isn't owned by the user named.");
+    }
+    return await this.impl.removeGadgetsByTitle(titles);
+  }
+
+  /**
+   * Brick: remove gadgets by title from a user's workspace (AuthenticatedApi.removeCopyGadgets).
+   * Reachable only from a Worker binding the Overseer namespace; `ownerUserId` must be the owner.
    */
   async rebindFromTemplate(ownerUserId: string, template: WorkspaceTemplate)
       : Promise<WorkspaceCopyReport> {

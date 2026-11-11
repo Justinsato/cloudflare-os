@@ -328,6 +328,44 @@ describe("rebindFromTemplate", () => {
   }));
 });
 
+describe("removeGadgetsByTitle", () => {
+  it("removes the named gadgets and reports titles it could not match", async () => {
+    await inWorkspace(async impl => {
+      await buildSource(impl);
+      let titles = [...impl.storage.gadgets.list()]
+          .filter((g: any) => g.type === "gadget" && !g.pending).map((g: any) => g.title);
+      expect(titles.length).toBeGreaterThan(1);
+      let result = await impl.removeGadgetsByTitle([titles[0], "No Such Gadget"]);
+      expect(result.removed.map((r: any) => r.title)).toEqual([titles[0]]);
+      expect(result.notFound).toEqual(["No Such Gadget"]);
+      expect(result.ambiguous).toEqual([]);
+      let left = [...impl.storage.gadgets.list()]
+          .filter((g: any) => g.type === "gadget" && !g.pending).map((g: any) => g.title);
+      expect(left).not.toContain(titles[0]);
+      expect(left).toEqual(titles.slice(1));
+    });
+  });
+
+  it("removes nothing for a title more than one gadget has", async () => {
+    await inWorkspace(async impl => {
+      await buildSource(impl);
+      let gadgets = [...impl.storage.gadgets.list()]
+          .filter((g: any) => g.type === "gadget" && !g.pending);
+      for (let g of gadgets) { g.title = "Same"; impl.storage.gadgets.put(g); }
+      let result = await impl.removeGadgetsByTitle(["Same"]);
+      expect(result).toEqual({ removed: [], notFound: [], ambiguous: ["Same"] });
+      expect([...impl.storage.gadgets.list()].filter((g: any) => g.type === "gadget" && !g.pending).length)
+          .toBe(gadgets.length);
+    });
+  });
+
+  it("refuses a caller that names someone other than the owner",
+      () => inWorkspace(async (_impl, instance) => {
+    await expect(instance.removeGadgetsByTitle("someone-else", ["T"]))
+        .rejects.toThrow(/isn't owned by/);
+  }));
+});
+
 describe("exportWorkspaceTemplate", () => {
   async function openAs(instance: OverseerDurableObject, role: "build" | "use"): Promise<Overseer> {
     let impl = (instance as unknown as { impl: any }).impl;
