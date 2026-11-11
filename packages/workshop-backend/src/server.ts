@@ -502,6 +502,34 @@ class AuthenticatedApiImpl extends RpcTarget implements AuthenticatedApi {
     return {id: copyId, reminted, report};
   }
 
+  async removeCopyGadgets(copyId: string, titles: string[], options: {forUser?: string} = {})
+      : Promise<{id: string, removed: {id: number, title: string}[], notFound: string[],
+          ambiguous: string[]}> {
+    if (typeof copyId !== "string" || !/^[0-9a-f]{64}$/.test(copyId)) {
+      throw new Error("Not a workspace id.");
+    }
+    if (!Array.isArray(titles) || titles.length === 0 ||
+        !titles.every(t => typeof t === "string" && t.length > 0)) {
+      throw new Error("titles must be a non-empty list of gadget titles.");
+    }
+    let ownerId = this.#userId;
+    if (options.forUser !== undefined) {
+      if (!this.#isAdmin()) {
+        throw new Error("Only an admin can remove gadgets from another user's workspace.");
+      }
+      let username = options.forUser.trim().toLowerCase();
+      if (!/^\S+$/.test(username)) {
+        throw new Error("forUser must be the user's sign-in email or username.");
+      }
+      ownerId = this.users.idFromName(username);
+      let profile = await retryOnDoReset(() => this.users.get(ownerId).whoamiIfExists());
+      if (!profile) throw new Error(`${username} has not signed in to this OS yet.`);
+    }
+    let result = await this.overseers.get(this.overseers.idFromString(copyId))
+        .removeGadgetsByTitle(ownerId.toString(), titles);
+    return {id: copyId, ...result};
+  }
+
   listOutputs(): Promise<ListOutputsResult> {
     return this.#user.listOutputs();
   }
@@ -1072,6 +1100,13 @@ class OperatorSession extends NativeRpcTarget {
   repairWorkspaceCopy(copyId: string, sourceId: string, options?: {forUser?: string})
       : Promise<{id: string, reminted: string[], report: WorkspaceCopyReport}> {
     return this.#api.repairWorkspaceCopy(copyId, sourceId, options);
+  }
+
+  /** As AuthenticatedApi.removeCopyGadgets(); `forUser` needs the operator to be an admin. */
+  removeCopyGadgets(copyId: string, titles: string[], options?: {forUser?: string})
+      : Promise<{id: string, removed: {id: number, title: string}[], notFound: string[],
+          ambiguous: string[]}> {
+    return this.#api.removeCopyGadgets(copyId, titles, options);
   }
 
   /** As AuthenticatedApi.setWorkspacePlacement(); the operator must be an admin. */

@@ -758,6 +758,16 @@ export interface AuthenticatedApi extends RpcTarget {
       : Promise<{id: string, reminted: string[], report: WorkspaceCopyReport}>;
 
   /**
+   * Brick: permanently remove the gadgets with these exact titles from a workspace, for trimming a
+   * copy made with copyWorkspace(). A title matching no gadget is reported in notFound; one
+   * matching several removes none and is reported in ambiguous. With `forUser` (admins only) the
+   * workspace belongs to that user; without it, to the caller.
+   */
+  removeCopyGadgets(copyId: string, titles: string[], options?: {forUser?: string})
+      : Promise<{id: string, removed: {id: number, title: string}[], notFound: string[],
+          ambiguous: string[]}>;
+
+  /**
    * List the outputs of all the user's workspaces. Used to display the Outputs page, which lets
    * the user find things they made without remembering which workspace they made them in.
    *
