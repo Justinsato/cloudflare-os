@@ -75,6 +75,8 @@ export interface NavConfig {
   buildSection?: boolean
   /** Place the Build section under this group's label instead of in the primary nav. */
   buildAfterGroup?: string
+  /** Label for the section holding workspaces outside every group; "Other workspaces" when unset. */
+  otherLabel?: string
   /** Sidebar titles for gatekeeper apps, keyed by the title the gatekeeper gives ("Skills"). */
   appTitles?: Record<string, string>
 }
@@ -188,6 +190,7 @@ function parseNav(v: unknown): NavConfig | undefined {
     groups,
     buildSection: n.buildSection === true,
     ...(isString(n.buildAfterGroup) ? { buildAfterGroup: n.buildAfterGroup } : {}),
+    ...(isString(n.otherLabel) ? { otherLabel: n.otherLabel.trim() } : {}),
     ...(appTitles ? { appTitles } : {}),
   }
 }

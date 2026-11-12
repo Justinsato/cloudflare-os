@@ -44,6 +44,7 @@ describe('groupWorkspaces', () => {
     expect(sections(groupWorkspaces(WORKSPACES, 'trades', navGroups))).toEqual([
       ['Operating companies', ['back9']],
     ])
+    expect(sections(groupWorkspaces(WORKSPACES, '', navGroups, 'Private')).at(-1)).toEqual(['Private', ['cap']])
   })
 
   it('drops empty sections', () => {

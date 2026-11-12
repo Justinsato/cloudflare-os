@@ -30,10 +30,11 @@ export function groupWorkspaces(
   items: readonly WorkspaceSwitcherItem[],
   query: string,
   navGroups: readonly NavGroup[] = siteConfig().nav?.groups ?? [],
+  otherLabel: string | undefined = siteConfig().nav?.otherLabel,
 ) {
   const needle = query.trim().toLowerCase()
   return workspaceNavList(workspaceNavSections(
-    items, navGroups, w => !needle || untitled(w.title).toLowerCase().includes(needle)))
+    items, navGroups, w => !needle || untitled(w.title).toLowerCase().includes(needle), otherLabel))
 }
 
 export default function WorkspaceSwitcher({

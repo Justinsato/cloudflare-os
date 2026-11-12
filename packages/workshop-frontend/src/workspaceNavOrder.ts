@@ -28,6 +28,7 @@ export function workspaceNavSections<T extends NavOrderWorkspace>(
   workspaces: readonly T[],
   navGroups: readonly NavGroup[],
   matches: (w: T) => boolean = () => true,
+  otherLabel?: string,
 ): WorkspaceNavSections<T> {
   const byId = new Map(workspaces.map((w) => [w.id, w]))
   // Workspaces in a group leave Favorites and Recent, so each appears once.
@@ -49,7 +50,7 @@ export function workspaceNavSections<T extends NavOrderWorkspace>(
     groups,
     favorites: favorites.toSorted(byActive),
     recent: recent.toSorted(byActive),
-    recentLabel: navGroups.length > 0 ? 'Other workspaces' : 'Recent workspaces',
+    recentLabel: navGroups.length > 0 ? otherLabel ?? 'Other workspaces' : 'Recent workspaces',
   }
 }
 
