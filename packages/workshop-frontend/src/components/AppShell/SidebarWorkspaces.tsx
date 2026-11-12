@@ -149,11 +149,13 @@ export function SidebarWorkspacesProvider({ children }: { children: ReactNode })
 
   // Deployment-defined groups (site config) in configured order, then Favorites, then the rest.
   // Shared with the top-bar WorkspaceSwitcher so both list workspaces the same way.
-  const configuredGroups = useSiteConfig().nav?.groups
+  const configuredNav = useSiteConfig().nav
+  const configuredGroups = configuredNav?.groups
+  const otherLabel = configuredNav?.otherLabel
   const navGroups = useMemo(() => configuredGroups ?? [], [configuredGroups])
   const { groups, favorites, recent } = useMemo(
-    () => workspaceNavSections(gadgets, navGroups, (g) => matchText(g.title)),
-    [gadgets, matchText, navGroups],
+    () => workspaceNavSections(gadgets, navGroups, (g) => matchText(g.title), otherLabel),
+    [gadgets, matchText, navGroups, otherLabel],
   )
 
   // --- Workspace actions ---------------------------------------------------
@@ -351,6 +353,7 @@ export function SidebarWorkspacesLists({
     return next
   })
   const grouped = groups.length > 0
+  const otherLabel = useSiteConfig().nav?.otherLabel ?? 'Other workspaces'
 
   if (collapsed) {
     const compact = grouped
@@ -455,7 +458,7 @@ export function SidebarWorkspacesLists({
           there are none. */}
       {(!grouped || gadgetsLoading || recent.length > 0) && (
       <SidebarSection
-        label={grouped ? 'Other workspaces' : 'Recent workspaces'}
+        label={grouped ? otherLabel : 'Recent workspaces'}
         open={recentOpen}
         onToggle={() => setRecentOpen((o) => !o)}
       >
