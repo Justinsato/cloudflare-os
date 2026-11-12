@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'reac
 import { DropdownMenu, useKumoToastManager } from '@cloudflare/kumo'
 import { useAuthenticatedApi } from '../AuthContext'
 import { MENU_CONTENT, MENU_ITEM, MENU_ITEM_DANGER } from './menuStyles'
+import { blueprintDisplayDetail, blueprintDisplayName, groupBlueprints } from '../blueprintCatalog'
 
 // A unified row item, merged from the user's published blueprints (`listOwnBlueprints`) and their
 // library (`listLibraryBlueprints`). Mirrors the sidebar's SidebarBlueprintItem but adds the bits
@@ -75,11 +76,16 @@ function BlueprintRow({
         <div className="flex items-center gap-2">
           {item.pinned && <Star size={12} weight="fill" className="flex-shrink-0 text-kumo-brand" />}
           <h3 className="truncate text-sm font-medium text-kumo-default">
-            {item.title || 'Untitled blueprint'}
+            {blueprintDisplayName(item.title) || 'Untitled blueprint'}
           </h3>
+          {blueprintDisplayDetail(item.title) && (
+            <span className="flex-shrink-0 text-[11px] uppercase tracking-[0.06em] text-kumo-inactive">
+              {blueprintDisplayDetail(item.title)}
+            </span>
+          )}
         </div>
         {item.description && (
-          <p className="mt-0.5 truncate text-xs text-kumo-subtle">{item.description}</p>
+          <p className="mt-0.5 line-clamp-2 text-xs text-kumo-subtle">{item.description}</p>
         )}
       </div>
 
@@ -337,14 +343,45 @@ export default function BlueprintList() {
             </div>
           )
         ) : (
-          filtered.map((item) => (
-            <BlueprintRow
-              key={item.id}
-              item={item}
-              onTogglePin={handleTogglePin}
-              onRemoveFromLibrary={handleRemoveFromLibrary}
-            />
-          ))
+          <>
+            {filtered.some((b) => b.pinned) && (
+              <section aria-label="Favorites" className="mb-5">
+                <div className="px-3 pb-1.5">
+                  <h2 className="text-[14px] font-semibold tracking-[-0.25px] text-kumo-default">Favorites</h2>
+                </div>
+                {filtered.filter((b) => b.pinned).map((item) => (
+                  <BlueprintRow
+                    key={item.id}
+                    item={item}
+                    onTogglePin={handleTogglePin}
+                    onRemoveFromLibrary={handleRemoveFromLibrary}
+                  />
+                ))}
+              </section>
+            )}
+            {groupBlueprints(filtered.filter((b) => !b.pinned)).map((group) => (
+              <section key={group.name} aria-labelledby={`blueprint-group-${group.name}`} className="mb-5 last:mb-0">
+                <div className="px-3 pb-1.5">
+                  <h2
+                    id={`blueprint-group-${group.name}`}
+                    className="text-[14px] font-semibold tracking-[-0.25px] text-kumo-default"
+                  >
+                    {group.heading}
+                    <span className="ml-2 text-[12px] font-normal text-kumo-inactive">{group.items.length}</span>
+                  </h2>
+                  <p className="mt-0.5 text-[12px] leading-4 text-kumo-subtle">{group.blurb}</p>
+                </div>
+                {group.items.map((item) => (
+                  <BlueprintRow
+                    key={item.id}
+                    item={item}
+                    onTogglePin={handleTogglePin}
+                    onRemoveFromLibrary={handleRemoveFromLibrary}
+                  />
+                ))}
+              </section>
+            ))}
+          </>
         )}
       </div>
     </div>
