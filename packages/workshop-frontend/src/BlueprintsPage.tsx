@@ -12,6 +12,9 @@ import { useAuthenticatedApi } from "./AuthContext";
 import { BindingBadge, uniqueBindingBadges } from "./components/BlueprintCard";
 import { BlueprintPreviewPlaceholder } from "./components/BlueprintPreviewImage";
 import ViewToggle from "./components/ViewToggle";
+import {
+  blueprintDisplayDetail, blueprintDisplayName, groupBlueprints,
+} from "./blueprintCatalog";
 
 type VendorMap = Map<string, VendorDescription>;
 
@@ -75,14 +78,18 @@ export default function BlueprintsPage() {
     );
   });
 
+  const groups = groupBlueprints(
+    filtered.map((blueprint) => ({ id: blueprint.id, title: blueprint.metadata.title, blueprint })),
+  );
+
   return (
     <div className="mx-auto flex h-full w-full max-w-5xl flex-col px-3 sm:px-10">
       <header className="flex items-end justify-between gap-4 px-3 pb-4 pt-6 sm:pt-10">
         <div className="min-w-0">
           <h1 className="text-2xl font-semibold tracking-tight text-kumo-default">Explore</h1>
           <p className="mt-1 text-[13px] leading-[18px] tracking-[-0.25px] text-kumo-subtle">
-            Discover featured blueprints to use as starting points. Open one to create a workspace
-            from it, or save it to reuse later.
+            Ready-made pages you can add. They are grouped by what they make. Open one to see what
+            it does and what it connects to, then create it or save it for later.
           </p>
         </div>
         <ViewToggle view={view} onChange={setView} />
@@ -124,26 +131,42 @@ export default function BlueprintsPage() {
                 : "Featured blueprints will appear here when they’re published. You can still create blueprints from your own workspaces."
             }
           />
-        ) : view === "grid" ? (
-          <div className="grid grid-cols-1 gap-4 px-3 sm:grid-cols-2 lg:grid-cols-3">
-            {filtered.map((blueprint) => (
-              <FeaturedBlueprintCard
-                key={blueprint.id}
-                blueprint={blueprint}
-                vendorDescriptions={vendorDescriptions}
-              />
-            ))}
-          </div>
         ) : (
-          <div className="flex flex-col gap-0.5">
-            {filtered.map((blueprint) => (
-              <FeaturedBlueprintRow
-                key={blueprint.id}
-                blueprint={blueprint}
-                vendorDescriptions={vendorDescriptions}
-              />
-            ))}
-          </div>
+          groups.map((group) => (
+            <section key={group.name} aria-labelledby={`explore-group-${group.name}`} className="mb-7 last:mb-0">
+              <div className="px-3 pb-2">
+                <h2
+                  id={`explore-group-${group.name}`}
+                  className="text-[14px] font-semibold tracking-[-0.25px] text-kumo-default"
+                >
+                  {group.heading}
+                  <span className="ml-2 text-[12px] font-normal text-kumo-inactive">{group.items.length}</span>
+                </h2>
+                <p className="mt-0.5 text-[12px] leading-4 text-kumo-subtle">{group.blurb}</p>
+              </div>
+              {view === "grid" ? (
+                <div className="grid grid-cols-1 gap-4 px-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {group.items.map(({ blueprint }) => (
+                    <FeaturedBlueprintCard
+                      key={blueprint.id}
+                      blueprint={blueprint}
+                      vendorDescriptions={vendorDescriptions}
+                    />
+                  ))}
+                </div>
+              ) : (
+                <div className="flex flex-col gap-0.5">
+                  {group.items.map(({ blueprint }) => (
+                    <FeaturedBlueprintRow
+                      key={blueprint.id}
+                      blueprint={blueprint}
+                      vendorDescriptions={vendorDescriptions}
+                    />
+                  ))}
+                </div>
+              )}
+            </section>
+          ))
         )}
       </div>
     </div>
@@ -193,10 +216,11 @@ function FeaturedBlueprintCard({
         </div>
         <div className="min-w-0 flex-1">
           <p className="truncate text-[13px] font-medium leading-[18px] tracking-[-0.25px] text-kumo-default">
-            {blueprint.metadata.title}
+            {blueprintDisplayName(blueprint.metadata.title)}
           </p>
+          <BlueprintDetail title={blueprint.metadata.title} />
           <p
-            className={`mt-0.5 line-clamp-1 text-[12px] leading-4 tracking-[-0.2px] ${
+            className={`mt-0.5 line-clamp-3 text-[12px] leading-4 tracking-[-0.2px] ${
               blueprint.metadata.description ? "text-kumo-subtle" : "italic text-kumo-inactive"
             }`}
           >
@@ -239,10 +263,11 @@ function FeaturedBlueprintRow({
       </div>
       <div className="min-w-0 flex-1">
         <p className="truncate text-sm font-medium tracking-[-0.25px] text-kumo-default">
-          {blueprint.metadata.title}
+          {blueprintDisplayName(blueprint.metadata.title)}
+          <BlueprintDetail title={blueprint.metadata.title} inline />
         </p>
         <p
-          className={`mt-0.5 line-clamp-1 text-[12px] leading-4 tracking-[-0.2px] ${
+          className={`mt-0.5 line-clamp-2 text-[12px] leading-4 tracking-[-0.2px] ${
             blueprint.metadata.description ? "text-kumo-subtle" : "italic text-kumo-inactive"
           }`}
         >
@@ -261,6 +286,17 @@ function FeaturedBlueprintRow({
         </div>
       )}
     </Link>
+  );
+}
+
+/** "Monitor · Daily" beside a convention title: what you do with it and how often it refreshes. */
+function BlueprintDetail({ title, inline }: { title: string; inline?: boolean }) {
+  const detail = blueprintDisplayDetail(title);
+  if (!detail) return null;
+  return inline ? (
+    <span className="ml-2 text-[11px] font-normal uppercase tracking-[0.06em] text-kumo-inactive">{detail}</span>
+  ) : (
+    <p className="text-[11px] uppercase leading-4 tracking-[0.06em] text-kumo-inactive">{detail}</p>
   );
 }
 
