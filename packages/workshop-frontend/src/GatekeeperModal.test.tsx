@@ -151,10 +151,9 @@ function authenticatedApi({ resource = RESOURCE, otherResources = [], accountIds
     ui: { [Symbol.dispose]() {} },
   }))
   return {
-    listModels: async (kind?: ModelKind) => kind === 'decision' ? [DECISION_MODEL] : [CHAT_MODEL],
-    listGatekeeperVendors: async (filter?: { includeAmbient?: boolean }) => [{
     listModels: async (kind?: ModelKind) => kind === 'decision' ? [DECISION_MODEL] : testState.chatModels ?? [CHAT_MODEL],
-    listGatekeeperVendors: async () => [{      id: 'catalog',
+    listGatekeeperVendors: async (filter?: { includeAmbient?: boolean }) => [{
+      id: 'catalog',
       description: VENDOR,
       supportedResources: resources,
     }, ...(filter?.includeAmbient ? [{
@@ -200,15 +199,11 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-async function renderModal(props: {
-  initialVendorId?: string
-  initialResourceUrl?: string
-  initialResourceUrlPattern?: string
-  initialAccountId?: number
-} & Partial<Pick<GatekeeperModalProps, 'getOverseer' | 'onCreated' | 'onClose'>> = {},
-apiOptions: Parameters<typeof authenticatedApi>[0] = {}) {
-async function renderModal(props: Partial<ComponentProps<typeof GatekeeperModal>> = {},
-  apiOptions: Parameters<typeof authenticatedApi>[0] = {}) {  testState.authenticatedApi = authenticatedApi(apiOptions)
+async function renderModal(
+  props: Partial<ComponentProps<typeof GatekeeperModal>> = {},
+  apiOptions: Parameters<typeof authenticatedApi>[0] = {},
+) {
+  testState.authenticatedApi = authenticatedApi(apiOptions)
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -795,6 +790,8 @@ describe('GatekeeperModal ambient gatekeepers', () => {
     expect(onCreated).toHaveBeenCalledWith(gatekeeper)
     expect(onClose).toHaveBeenCalled()
     expect(gatekeeper[Symbol.dispose]).not.toHaveBeenCalled()
+  })
+})
 
 describe('stable resource type selection', () => {
   it('opens the same type by ID after its pattern changes', async () => {
@@ -831,5 +828,6 @@ describe('stable resource type selection', () => {
     await act(async () => api.subscriber!.add(1, {
       ...accountDescription(1, []), grantedResourceTypeIds: ['catalog'],
     }, VENDOR, [resource], true, 'catalog'))
-    expect(api.startResourceConfigurator).toHaveBeenCalledWith(1, 'catalog')  })
+    expect(api.startResourceConfigurator).toHaveBeenCalledWith(1, 'catalog')
+  })
 })

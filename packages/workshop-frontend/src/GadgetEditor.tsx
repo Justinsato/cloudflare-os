@@ -606,6 +606,7 @@ export default function GadgetEditor() {
   }
   const [blueprintModalOpen, setBlueprintModalOpen] = useState(false)
   const [blueprintUpdateDialogOpen, setBlueprintUpdateDialogOpen] = useState(false)
+  const [previewMode, _setPreviewMode] = useState(false)
   const [workpieceRailExpanded, setWorkpieceRailExpanded] = useState(getInitialAppRailExpanded)
   // The expanded Outputs rail's width, dragged from its left edge and remembered per browser.
   const [workpieceRailExpandedWidth, setWorkpieceRailExpandedWidth] = useState(
@@ -2658,7 +2659,8 @@ export default function GadgetEditor() {
               onSelect={handleSelectWorkpiece}
               onRename={handleRenameWorkpiece}
               onMoveGadget={canReorderGadgets ? handleMoveGadget : undefined}
-              onDelete={requestGadgetDeletion}              pendingActivityCount={pendingActionCount}
+              onDelete={requestGadgetDeletion}
+              pendingActivityCount={pendingActionCount}
               onOpenActivity={() => openActivity(pendingActionCount > 0 ? 'review' : 'history')}
             />
           </div>
