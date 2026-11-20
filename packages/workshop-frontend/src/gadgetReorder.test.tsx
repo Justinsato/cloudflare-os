@@ -64,6 +64,7 @@ describe('Outputs rail reordering', () => {
         onSelect={vi.fn<(id: number) => void>()}
         onRename={vi.fn<(id: number, title: string) => void>()}
         onMoveGadget={onMoveGadget}
+        onDelete={vi.fn<() => void>()}
         pendingActivityCount={0}
         onOpenActivity={vi.fn<() => void>()}
       />,

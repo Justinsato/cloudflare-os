@@ -22,7 +22,6 @@ import {
 import { RpcStub, RpcTarget } from 'capnweb'
 import { isWorkspaceHomeTitle, sortByGadgetOrder } from '@gadgets/workshop-shared/gadget-order'
 import { applyGadgetMove, type GadgetMove } from './gadgetReorder'
-import GadgetSwitcher from './GadgetSwitcher'
 import WorkspaceSwitcher from './WorkspaceSwitcher'
 import { useAuthenticatedApi } from './AuthContext'
 import { useConnectionLost, useRpcStub } from './RpcContext'
@@ -2457,10 +2456,11 @@ export default function GadgetEditor() {
                       <House size={15} weight={selectedWorkpieceId === homeGadgetId ? 'fill' : 'regular'} />
                     </WorkshopIconButton>
                   )}
-                  <GadgetSwitcher
-                    workpieces={visibleWorkpieces}
-                    selectedId={selectedWorkpieceId}
+                  <PaneWorkpieceTabs
+                    gadgets={visibleWorkpieces}
+                    activeId={selectedWorkpieceId}
                     onSelect={handleSelectWorkpiece}
+                    onDelete={requestGadgetDeletion}
                   />
                 </div>              )}
             </div>

@@ -758,10 +758,13 @@ describe('GatekeeperModal resource grant step', () => {
 
 describe('GatekeeperModal ambient gatekeepers', () => {
   it('lists an ambient vendor and adds it in one step', async () => {
-    const gatekeeper = { [Symbol.dispose]: vi.fn<() => void>() }
+    const gatekeeper = {
+      getId: vi.fn<() => Promise<number>>(async () => 42),
+      [Symbol.dispose]: vi.fn<() => void>(),
+    }
     const newAmbientGatekeeper = vi.fn<(vendorId: string) => Promise<typeof gatekeeper>>(
       async () => gatekeeper)
-    const onCreated = vi.fn<(gk: unknown) => Promise<void>>(async () => {})
+    const onCreated = vi.fn<(gk: unknown, id: number) => Promise<void>>(async () => {})
     const onClose = vi.fn<() => void>()
     await renderModal({
       getOverseer: () => ({ newAmbientGatekeeper }) as unknown as ReturnType<GatekeeperModalProps['getOverseer']>,
@@ -787,7 +790,7 @@ describe('GatekeeperModal ambient gatekeepers', () => {
     await act(async () => addConnection.click())
 
     expect(newAmbientGatekeeper).toHaveBeenCalledWith('cockpit')
-    expect(onCreated).toHaveBeenCalledWith(gatekeeper)
+    expect(onCreated).toHaveBeenCalledWith(gatekeeper, 42)
     expect(onClose).toHaveBeenCalled()
     expect(gatekeeper[Symbol.dispose]).not.toHaveBeenCalled()
   })

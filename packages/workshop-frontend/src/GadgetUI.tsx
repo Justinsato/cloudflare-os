@@ -5,6 +5,8 @@ import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
 import { GadgetClient, GadgetSnapshotClient, ConsoleLogEvent, type GadgetHost } from '@gadgets/workshop-shared/api'
 import { prepareUiPage, uiModuleKey, type UiPage } from '@gadgets/workshop-shared/ui-page'
 import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
+import { useOptionalTheme } from './ThemeContext'
+import type { ResolvedThemeMode } from './theme'
 
 // Unfortunately, we will have to embed the code as a data: URL, because our iframe is totally
 // sandboxed. Even more unfortunately, since it's a module which we need to import from, we can't
@@ -126,6 +128,45 @@ import(${JSON.stringify(uiModuleKey('client.js'))}).then(entry => {
 const LEGACY_RUNTIME_URL = runtimeUrl(false)
 const MAIN_RUNTIME_URL = runtimeUrl(true)
 
+const themeRuntimeUrl = (theme: ResolvedThemeMode) =>
+  `data:text/javascript;charset=utf-8,${encodeURIComponent(String.raw`const __gadgetTheme = ${JSON.stringify(theme)};
+let current = __gadgetTheme;
+const applyTheme = (theme) => {
+  current = theme;
+  document.documentElement.dataset.theme = theme;
+  document.documentElement.style.colorScheme = theme;
+};
+applyTheme(current);
+Object.defineProperty(window, 'gadgetTheme', { get: () => current, enumerable: true });
+window.addEventListener('message', (event) => {
+  if (event.source !== window.parent) return;
+  const data = event.data;
+  if (!data || data.type !== 'theme' || (data.theme !== 'light' && data.theme !== 'dark')) return;
+  if (data.theme === current) return;
+  applyTheme(data.theme);
+  window.dispatchEvent(new CustomEvent('gadget-theme', { detail: { theme: current } }));
+});`)}`
+
+const PAINT_RUNTIME_URL = `data:text/javascript;charset=utf-8,${encodeURIComponent(String.raw`let reported = false;
+const shows = (element) => {
+  if (!(element instanceof HTMLElement || element instanceof SVGElement) ||
+      element.closest('[aria-hidden="true"]')) return false;
+  const rect = element.getBoundingClientRect();
+  const style = getComputedStyle(element);
+  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+};
+const check = () => {
+  if (reported || !document.body || !Array.from(document.body.children).some(shows)) return;
+  reported = true;
+  observer.disconnect();
+  window.removeEventListener('resize', check);
+  requestAnimationFrame(() => window.parent.postMessage({ type: 'painted' }, '*'));
+};
+const observer = new MutationObserver(check);
+observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+window.addEventListener('resize', check);
+setTimeout(check, 0);`)}`
+
 /** How the frame runs the gadget, as `globalThis.gadgetRenderMode` tells its code; unset live. */
 export type GadgetRenderMode = 'snapshot'
 
@@ -197,15 +238,21 @@ class GadgetFrameRoot extends RpcTarget {
   }
 }
 
-const createSandboxedHtml = (page: UiPage, renderMode: GadgetRenderMode | undefined): string => {
+const createSandboxedHtml = (
+  page: UiPage,
+  renderMode: GadgetRenderMode | undefined,
+  theme: ResolvedThemeMode,
+): string => {
   return `<!DOCTYPE html>
-<html>
+<html data-theme="${theme}" style="color-scheme: ${theme}">
 <head>
   ${SANDBOX_HEAD}
   <script type="importmap">${page.importMap}</script>
 </head>
 <body>
     ${renderMode ? `<script type="module" src="${RENDER_MODE_URLS[renderMode]}"></script>` : ''}
+    <script type="module" src="${themeRuntimeUrl(theme)}"></script>
+    <script type="module" src="${PAINT_RUNTIME_URL}"></script>
     <script type="module" src="${page.callsMain ? MAIN_RUNTIME_URL : LEGACY_RUNTIME_URL}"></script>
     <script type="module" src="${page.entryUrl}"></script>
 </body>
@@ -241,6 +288,7 @@ interface GadgetUIProps {
 // How long to wait for a UI bundle before offering a retry instead of a spinner. Not a latency
 // budget: the point at which we conclude the reply is never coming.
 const UI_BUNDLE_LOAD_TIMEOUT_MS = 20_000
+const PAINT_COVER_TIMEOUT_MS = 10_000
 const RECONNECT_TIMEOUT_MS = 5_000
 
 export default function GadgetUI(props: GadgetUIProps) {
@@ -248,7 +296,13 @@ export default function GadgetUI(props: GadgetUIProps) {
 }
 
 function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, renderMode, onConsoleLog, onIframeEscape, onNoUiChange, onOpenAgentChat, onOpenWorkpiece, viewState, onViewStateChange }: GadgetUIProps) {
+  const themeContext = useOptionalTheme()
+  const resolvedTheme: ResolvedThemeMode = themeContext?.resolvedThemeMode ??
+    (document.documentElement.getAttribute('data-mode') === 'dark' ? 'dark' : 'light')
+  const themeRef = useRef(resolvedTheme)
+  themeRef.current = resolvedTheme
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
+  const [paintedHtml, setPaintedHtml] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
   // A connection failure is tied to the client it was tried on, so a replacement gets its own try.
   const [error, setError] = useState<{ message: string; stub?: GadgetUIProps['gadget'] } | null>(null)
@@ -257,6 +311,9 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   const [isInvalidated, setIsInvalidated] = useState(false)
   const [iframeGeneration, setIframeGeneration] = useState(0)
   const iframeRef = useRef<HTMLIFrameElement>(null)
+  const sandboxedHtmlRef = useRef(sandboxedHtml)
+  sandboxedHtmlRef.current = sandboxedHtml
+  const painted = sandboxedHtml !== null && paintedHtml === sandboxedHtml
   const prevReloadTriggerRef = useRef(reloadTrigger)
   // Identifies the newest bundle load, so an older one can't write state after being superseded.
   const loadGenerationRef = useRef(0)
@@ -302,6 +359,12 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     onNoUiChangeRef.current?.(true)
     return () => onNoUiChangeRef.current?.(false)
   }, [showsNoUi])
+
+  useEffect(() => {
+    if (sandboxedHtml === null || !isVisible) return
+    const timeout = setTimeout(() => setPaintedHtml(sandboxedHtml), PAINT_COVER_TIMEOUT_MS)
+    return () => clearTimeout(timeout)
+  }, [sandboxedHtml, isVisible])
 
   const suspendGadgetCalls = () => {
     if (!pendingGadgetStubRef.current) {
@@ -439,7 +502,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         if (bundle) {
           const page = prepareUiPage(bundle, CAPNWEB_MODULE_URL)
           pathsByUrlRef.current = page.pathsByUrl
-          setSandboxedHtml(createSandboxedHtml(page, renderMode))
+          setSandboxedHtml(createSandboxedHtml(page, renderMode, themeRef.current))
         } else {
           setSandboxedHtml(null)
         }
@@ -470,6 +533,10 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   // LSP reports an error here, but tsc does not.
   // The LSP error is due to bugs that need to be fixed in Cap'n Web.
   }, [gadget, isVisible, hasLoaded, isInvalidated, chatId, renderMode, retryNonce])
+
+  useEffect(() => {
+    iframeRef.current?.contentWindow?.postMessage({ type: 'theme', theme: resolvedTheme }, '*')
+  }, [resolvedTheme])
 
   // Reads its callbacks through refs, so the handshake effect never tears down the RPC session.
   const frameEvents: FrameEvents = {
@@ -515,9 +582,14 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         onViewStateChangeRef.current?.(event.data.state)
         return
       }
+      if (event.data?.type === 'painted') {
+        setPaintedHtml(sandboxedHtmlRef.current)
+        return
+      }
 
       if (event.data === 'handshake' && event.ports && event.ports[0]) {
         const port = event.ports[0]
+        iframeRef.current?.contentWindow?.postMessage({ type: 'theme', theme: themeRef.current }, '*')
         const client = gadgetRef.current
         let gadgetStub: any = null
         resetConnection(new Error('Gadget iframe reloaded.'))
@@ -597,19 +669,6 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     )
   }
 
-  if (loading) {
-    return (
-      <div style={{
-        height,
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center'
-      }}>
-        <Loader size="lg" />
-      </div>
-    )
-  }
-
   if (errorMessage) {
     return (
       <div style={{
@@ -638,6 +697,10 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         />
       </div>
     )
+  }
+
+  if (loading || (!hasLoaded && !errorMessage)) {
+    return <GadgetLoading height={height} />
   }
 
   if (!sandboxedHtml) {
@@ -676,7 +739,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   }
 
   return (
-    <div style={{ height, width: '100%' }}>
+    <div className="relative" style={{ height, width: '100%' }}>
+      {!painted && <GadgetLoading height="100%" overlay />}
       <iframe
         key={frameKey}
         ref={iframeRef}
@@ -685,11 +749,28 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           display: 'block',
           width: '100%',
           height: '100%',
-          border: 'none'
+          border: 'none',
+          colorScheme: resolvedTheme,
         }}
         sandbox="allow-scripts allow-pointer-lock allow-popups allow-popups-to-escape-sandbox"
         title="Gadget UI"
       />
+    </div>
+  )
+}
+
+function GadgetLoading({ height, overlay = false }: { height: string; overlay?: boolean }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className={`flex flex-col items-center justify-center gap-3 bg-kumo-base text-kumo-subtle ${
+        overlay ? 'absolute inset-0 z-[1]' : ''
+      }`}
+      style={{ height }}
+    >
+      <Loader size="lg" />
+      <Text variant="secondary">Loading view…</Text>
     </div>
   )
 }

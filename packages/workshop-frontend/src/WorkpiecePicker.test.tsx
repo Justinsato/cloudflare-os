@@ -141,6 +141,7 @@ describe('WorkpiecePicker grouped panel', () => {
         onSelect={vi.fn<(id: number) => void>()}
         onRename={vi.fn<(id: number, title: string) => void>()}
         onMoveGadget={props.onMoveGadget}
+        onDelete={vi.fn<() => void>()}
         pendingActivityCount={0}
         onOpenActivity={vi.fn<() => void>()}
       />,

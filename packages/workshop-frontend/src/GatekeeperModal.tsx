@@ -817,7 +817,7 @@ export default function GatekeeperModal({
     try {
       const overseer = await getOverseer()
       gatekeeper = await overseer.newAmbientGatekeeper(vendorId)
-      await onCreated(gatekeeper)
+      await onCreated(gatekeeper, await gatekeeper.getId())
       transferred = true
       onClose()
     } catch (err) {
