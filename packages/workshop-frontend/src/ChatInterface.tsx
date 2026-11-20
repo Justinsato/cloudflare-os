@@ -129,7 +129,7 @@ import { useBulkResolve } from "./features/approvals/useBulkResolve";
 import { useActionOutcomes } from "./features/approvals/useActionOutcomes";
 import { AgentListRow } from "./features/chat/agents/AgentListRow";
 import { AgentRunsPane } from "./features/chat/agents/AgentRunsPane";
-import { type ChatListTab } from "./features/chat/agents/ChatListTabs";
+import { ChatListTabs, type ChatListTab } from "./features/chat/agents/ChatListTabs";
 import {
   agentsNeedingAttention, deriveAgents, ownConversations,
 } from "./features/chat/agents/agentList";
@@ -5714,49 +5714,18 @@ function ChatInterface({
   // ─── sidebar list content (reused in both modes) ──────────────────────────
   const chatListPanel = (
     <div className="flex-1 flex flex-col min-h-0">
-      {/* Chat list header — title doubles as the scope switcher */}
-      <div className="flex h-12 flex-shrink-0 items-center border-b border-kumo-line px-4">
-        <DropdownMenu>
-          <DropdownMenu.Trigger
-            render={
-              <button
-                type="button"
-                className="group flex h-8 -ml-1.5 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-left transition-colors duration-150 ease-out hover:bg-kumo-tint/60 focus-visible:bg-kumo-tint/60 focus-visible:outline-none data-[popup-open]:bg-kumo-tint/60"
-                aria-label="Filter conversations"
-              >
-                <span className="text-[13px] leading-[18px] font-medium tracking-[-0.25px] text-kumo-default">
-                  {CHAT_LIST_SCOPE_LABELS[chatListScope]}
-                </span>
-                <CaretDown
-                  size={10}
-                  weight="bold"
-                  className="text-kumo-inactive transition-transform duration-150 ease-out group-data-[popup-open]:rotate-180"
-                />
-              </button>
-            }
-          />
-          <DropdownMenu.Content className="themed-floating-shadow !z-[1100] !min-w-[200px] rounded-lg border border-kumo-line bg-kumo-base p-1">
-            {chatListScopes.map((scope) => {
-              const active = chatListScope === scope.value;
-              return (
-                <DropdownMenu.Item
-                  key={scope.value}
-                  onClick={() => setChatListScope(scope.value)}
-                  className="!h-auto rounded-md !px-2.5 !py-1.5 text-[12px] leading-4 tracking-[-0.2px] text-kumo-default transition-colors data-highlighted:bg-kumo-tint"
-                >
-                  <span className="mr-2 inline-flex h-3 w-3 items-center justify-center text-kumo-default">
-                    {active ? <Check size={11} weight="bold" /> : null}
-                  </span>
-                  <span className="flex-1">{CHAT_LIST_SCOPE_LABELS[scope.value]}</span>
-                  <span className="ml-3 font-mono text-[11px] text-kumo-inactive">
-                    {scope.count}
-                  </span>
-                </DropdownMenu.Item>
-              );
-            })}
-          </DropdownMenu.Content>
-        </DropdownMenu>
-        {headerAction && <div className="ml-auto flex items-center">{headerAction}</div>}      </div>
+      {/* Chat list header — Chats and Agents as peers */}
+      <div className="flex h-12 flex-shrink-0 items-center border-b border-kumo-line px-3">
+        <ChatListTabs
+          tab={listTab}
+          onTabChange={(next) => {
+            setListTab(next);
+            if (next === "chats") setAgentScreen(null);
+          }}
+          attention={agentAttention}
+        />
+        {headerAction && <div className="ml-auto flex items-center">{headerAction}</div>}
+      </div>
       {/* Chat list */}
       <div
         ref={restoreChatListScroll}
@@ -5926,13 +5895,14 @@ function ChatInterface({
                                 <>
                                   <span className="flex-shrink-0" aria-hidden="true">·</span>
                                   <span className="flex-shrink-0 font-mono">
-                                    ${chat.totalCost.toFixed(4)}
+                                    {formatUsageCost(chat.totalCost)}
                                   </span>
                                 </>
                               )}
                             </>
                           );
-                        })()}                      </div>
+                        })()}
+                      </div>
                     </div>
                     {!isRenaming && notificationsEnabled && (
                       <UnreadBadge count={unreadMessageCount} />

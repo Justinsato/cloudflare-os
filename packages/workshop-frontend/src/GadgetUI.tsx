@@ -5,6 +5,8 @@ import { RpcStub, RpcTarget, newMessagePortRpcSession } from 'capnweb'
 import { GadgetClient, GadgetSnapshotClient, ConsoleLogEvent, type GadgetHost } from '@gadgets/workshop-shared/api'
 import { prepareUiPage, uiModuleKey, type UiPage } from '@gadgets/workshop-shared/ui-page'
 import { CAPNWEB_MODULE_URL, SANDBOX_HEAD } from './sandboxDocument'
+import { useOptionalTheme } from './ThemeContext'
+import type { ResolvedThemeMode } from './theme'
 
 // Unfortunately, we will have to embed the code as a data: URL, because our iframe is totally
 // sandboxed. Even more unfortunately, since it's a module which we need to import from, we can't
@@ -132,6 +134,112 @@ export type GadgetRenderMode = 'snapshot'
 /** The longest view state a gadget may keep in the page URL; longer ones are ignored. */
 export const MAX_GADGET_VIEW_STATE_LENGTH = 2000
 
+// Brick overlay: a module script ahead of the runtime and so of every gadget module. It follows the
+// workspace theme, keeps the gadget's view state in the page URL, opens links to other gadgets in
+// place, and reports the first paint so the parent can drop its loading cover.
+const BRICK_PRELUDE_BODY = encodeURIComponent(String.raw`// The workspace's light/dark mode. The workspace has one theme switch and every gadget follows
+// it: the frame opens with __gadgetTheme (declared at the top of this module),
+// and the parent posts {type: 'theme', theme} whenever it changes. Gadgets style both modes with
+// @media (prefers-color-scheme: dark) or :root[data-theme="dark"], read window.gadgetTheme, or
+// listen for the 'gadget-theme' event. Installed ahead of the runtime's handshake so the parent's
+// first post can't arrive ahead of the listener.
+{
+  let current = __gadgetTheme === 'dark' ? 'dark' : 'light';
+  const applyTheme = (theme) => {
+    current = theme;
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+  };
+  applyTheme(current);
+  Object.defineProperty(window, 'gadgetTheme', { get: () => current, enumerable: true });
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent) return;
+    const data = event.data;
+    if (!data || data.type !== 'theme' || (data.theme !== 'light' && data.theme !== 'dark')) return;
+    if (data.theme === current) return;
+    applyTheme(data.theme);
+    window.dispatchEvent(new CustomEvent('gadget-theme', { detail: { theme: data.theme } }));
+  });
+}
+
+// The UI's view state (sort, filters, selected tab), kept in the workspace page's URL by the parent
+// so a reload or a shared link restores it. __gadgetViewState is declared at the top of this module
+// with the state the page opened with. Gadget code is a separate module, so it reaches gadgetView
+// as a global.
+globalThis.gadgetView = {
+  get params() { return new URLSearchParams(__gadgetViewState); },
+  set(params) {
+    __gadgetViewState = new URLSearchParams(params).toString();
+    window.parent.postMessage({ type: 'view-state', state: __gadgetViewState }, '*');
+  },
+};
+
+// A link to another gadget in this workspace opens it in place. The frame can't navigate the
+// page itself (no allow-top-navigation), so it asks the parent. Recognized: data-workpiece-id or
+// data-workpiece-title on any element, an href "#w=<id>", or a workspace URL carrying "?w=<id>".
+// The link can also open the target on a view state (the query it reads from gadgetView.params):
+// data-workpiece-view="<query>", the rest of "#w=<id>&<query>", or the URL's "view=<id>:<query>".
+window.addEventListener('click', (event) => {
+  if (!(event.target instanceof Element)) return;
+  const el = event.target.closest('[data-workpiece-id],[data-workpiece-title],a[href]');
+  if (!el) return;
+  let id = el.getAttribute('data-workpiece-id');
+  let title = el.getAttribute('data-workpiece-title');
+  let view = el.getAttribute('data-workpiece-view');
+  if (id == null && title == null && el.tagName === 'A') {
+    const href = el.getAttribute('href') || '';
+    const hash = /^#w=(\d+)(?:&(.*))?$/.exec(href);
+    if (hash) {
+      id = hash[1];
+      if (view == null && hash[2]) view = hash[2];
+    } else {
+      try {
+        const url = new URL(href);
+        if (/^\/workspace\/[^/]+\/?$/.test(url.pathname) && /^\d+$/.test(url.searchParams.get('w') || '')) {
+          id = url.searchParams.get('w');
+          const saved = url.searchParams.get('view') || '';
+          if (view == null && saved.startsWith(id + ':')) view = saved.slice(id.length + 1);
+        }
+      } catch {}
+    }
+  }
+  if (id == null && title == null) return;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+  window.parent.postMessage({ type: 'open-workpiece', id: id == null ? undefined : Number(id), title: title ?? undefined, view: view ?? undefined }, '*');
+}, true);
+
+// Tell the parent once the frame shows something, so it can drop its loading cover. "Something"
+// is a rendered element with text or media; a gadget's own loading text counts. Re-checked on
+// every DOM change and on resize (a frame laid out while hidden has no boxes yet).
+{
+  const MEDIA = 'img,svg,canvas,video,iframe,input,button,select,textarea,table';
+  let reported = false;
+  const shows = (el) => {
+    if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE' || el.tagName === 'TEMPLATE') return false;
+    const box = el.getBoundingClientRect();
+    if (box.width <= 0 || box.height <= 0) return false;
+    return el.matches(MEDIA) || el.textContent.trim() !== '' || el.querySelector(MEDIA) !== null;
+  };
+  const check = () => {
+    if (reported || !document.body || !Array.from(document.body.children).some(shows)) return;
+    reported = true;
+    observer.disconnect();
+    window.removeEventListener('resize', check);
+    requestAnimationFrame(() => window.parent.postMessage({ type: 'painted' }, '*'));
+  };
+  const observer = new MutationObserver(check);
+  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true });
+  window.addEventListener('resize', check);
+  setTimeout(check, 0);
+}
+//# sourceURL=gadget-brick-prelude.js
+`)
+const brickPreludeUrl = (viewState: string, theme: ResolvedThemeMode) =>
+  'data:text/javascript;charset=utf-8,' +
+  encodeURIComponent(`let __gadgetViewState = ${JSON.stringify(viewState)};\nconst __gadgetTheme = ${JSON.stringify(theme)};\n`) +
+  BRICK_PRELUDE_BODY
+
 // A module script of its own, ahead of the runtime and so of every gadget module, which keeps the
 // runtime's URLs, embedding Cap'n Web, encoded once at load rather than per mode on each render.
 const RENDER_MODE_URLS: Record<GadgetRenderMode, string> = {
@@ -197,15 +305,17 @@ class GadgetFrameRoot extends RpcTarget {
   }
 }
 
-const createSandboxedHtml = (page: UiPage, renderMode: GadgetRenderMode | undefined): string => {
+const createSandboxedHtml = (page: UiPage, renderMode: GadgetRenderMode | undefined, viewState: string, theme: ResolvedThemeMode): string => {
+  // The theme is also on <html> so the first paint, before any script runs, is in the right mode.
   return `<!DOCTYPE html>
-<html>
+<html data-theme="${theme}" style="color-scheme: ${theme}">
 <head>
   ${SANDBOX_HEAD}
   <script type="importmap">${page.importMap}</script>
 </head>
 <body>
     ${renderMode ? `<script type="module" src="${RENDER_MODE_URLS[renderMode]}"></script>` : ''}
+    <script type="module" src="${brickPreludeUrl(viewState, theme)}"></script>
     <script type="module" src="${page.callsMain ? MAIN_RUNTIME_URL : LEGACY_RUNTIME_URL}"></script>
     <script type="module" src="${page.entryUrl}"></script>
 </body>
@@ -241,14 +351,33 @@ interface GadgetUIProps {
 // How long to wait for a UI bundle before offering a retry instead of a spinner. Not a latency
 // budget: the point at which we conclude the reply is never coming.
 const UI_BUNDLE_LOAD_TIMEOUT_MS = 20_000
+// How long the loading cover stays over a frame that never reports content (a gadget that draws
+// nothing, or an old bundle without the paint check). After this the frame shows as it is.
+const PAINT_COVER_TIMEOUT_MS = 10_000
 const RECONNECT_TIMEOUT_MS = 5_000
 
 export default function GadgetUI(props: GadgetUIProps) {
   return <GadgetUISession key={props.chatId} {...props} />
 }
 
+// Outside a ThemeProvider (isolated renders), follow whatever mode the page applied.
+function documentThemeMode(): ResolvedThemeMode {
+  return document.documentElement.getAttribute('data-mode') === 'dark' ? 'dark' : 'light'
+}
+
 function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chatId, renderMode, onConsoleLog, onIframeEscape, onNoUiChange, onOpenAgentChat, onOpenWorkpiece, viewState, onViewStateChange }: GadgetUIProps) {
+  // The workspace's resolved light/dark mode, which every gadget frame follows.
+  const themeContext = useOptionalTheme()
+  const resolvedTheme: ResolvedThemeMode = themeContext?.resolvedThemeMode ?? documentThemeMode()
+  const themeRef = useRef(resolvedTheme)
+  themeRef.current = resolvedTheme
   const [sandboxedHtml, setSandboxedHtml] = useState<string | null>(null)
+  // The frame HTML that has reported content (see the paint check in the prelude). The cover shows
+  // over the frame until the current HTML has painted.
+  const [paintedHtml, setPaintedHtml] = useState<string | null>(null)
+  const sandboxedHtmlRef = useRef(sandboxedHtml)
+  sandboxedHtmlRef.current = sandboxedHtml
+  const painted = sandboxedHtml !== null && paintedHtml === sandboxedHtml
   const [loading, setLoading] = useState(false)
   // A connection failure is tied to the client it was tried on, so a replacement gets its own try.
   const [error, setError] = useState<{ message: string; stub?: GadgetUIProps['gadget'] } | null>(null)
@@ -292,7 +421,6 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   const onViewStateChangeRef = useRef(onViewStateChange)
   onViewStateChangeRef.current = onViewStateChange
   const viewStateRef = useRef(viewState ?? '')
-  viewStateRef.current = viewState ?? '' 
 
   // A code change invalidates the view without clearing `hasLoaded`, so the previous load's "no UI"
   // result must not keep counting while the replacement load is pending.
@@ -439,7 +567,7 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         if (bundle) {
           const page = prepareUiPage(bundle, CAPNWEB_MODULE_URL)
           pathsByUrlRef.current = page.pathsByUrl
-          setSandboxedHtml(createSandboxedHtml(page, renderMode))
+          setSandboxedHtml(createSandboxedHtml(page, renderMode, viewStateRef.current, themeRef.current))
         } else {
           setSandboxedHtml(null)
         }
@@ -491,6 +619,19 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     escape: () => onIframeEscapeRef.current?.(),
   }
 
+  // Tell the frame about theme changes without reloading it. Posted only to our own frame's window,
+  // and the prelude accepts it only from window.parent. The target origin is "*" because a
+  // sandboxed frame's origin is opaque.
+  useEffect(() => {
+    iframeRef.current?.contentWindow?.postMessage({ type: 'theme', theme: resolvedTheme }, '*')
+  }, [resolvedTheme])
+
+  useEffect(() => {
+    if (sandboxedHtml === null || !isVisible) return
+    const timeout = setTimeout(() => setPaintedHtml(sandboxedHtml), PAINT_COVER_TIMEOUT_MS)
+    return () => clearTimeout(timeout)
+  }, [sandboxedHtml, isVisible])
+
   // Effect to handle iframe RPC handshake
   useEffect(() => {
     let cancelled = false
@@ -505,19 +646,32 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
         return
       }
 
+      if (event.data?.type === 'painted') {
+        setPaintedHtml(sandboxedHtmlRef.current)
+        return
+      }
       if (event.data?.type === 'open-workpiece') {
-        const { id, title, view } = event.data
+        const id = Number.isSafeInteger(event.data.id) ? event.data.id as number : undefined
+        const title = typeof event.data.title === 'string' ? event.data.title : undefined
+        const view = typeof event.data.view === 'string' && event.data.view.length <= MAX_GADGET_VIEW_STATE_LENGTH
+          ? event.data.view
+          : undefined
         if (id !== undefined || title !== undefined) onOpenWorkpieceRef.current?.({ id, title, view })
         return
       }
-      if (event.data?.type === 'view-state' && typeof event.data.state === 'string') {
-        viewStateRef.current = event.data.state
-        onViewStateChangeRef.current?.(event.data.state)
+      if (event.data?.type === 'view-state') {
+        const state = event.data.state
+        if (typeof state !== 'string' || state.length > MAX_GADGET_VIEW_STATE_LENGTH) return
+        viewStateRef.current = state
+        onViewStateChangeRef.current?.(state)
         return
       }
 
       if (event.data === 'handshake' && event.ports && event.ports[0]) {
         const port = event.ports[0]
+        // The frame's listener is up by now. Re-send the theme in case it changed between building
+        // the srcdoc and the frame loading, when a post would have reached the blank document.
+        iframeRef.current?.contentWindow?.postMessage({ type: 'theme', theme: themeRef.current }, '*')
         const client = gadgetRef.current
         let gadgetStub: any = null
         resetConnection(new Error('Gadget iframe reloaded.'))
@@ -597,17 +751,10 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
     )
   }
 
-  if (loading) {
-    return (
-      <div style={{
-        height,
-        display: 'flex',
-        justifyContent: 'center',
-        alignItems: 'center'
-      }}>
-        <Loader size="lg" />
-      </div>
-    )
+  // Until the first bundle reply, the view is loading: the load effect sets `loading` only after
+  // the first paint, which would otherwise flash the "No gadget UI yet" placeholder.
+  if (loading || (!hasLoaded && !errorMessage)) {
+    return <GadgetLoading height={height} />
   }
 
   if (errorMessage) {
@@ -676,7 +823,8 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
   }
 
   return (
-    <div style={{ height, width: '100%' }}>
+    <div className="relative" style={{ height, width: '100%' }}>
+      {!painted && <GadgetLoading height="100%" overlay />}
       <iframe
         key={frameKey}
         ref={iframeRef}
@@ -685,11 +833,32 @@ function GadgetUISession({ gadget, height, reloadTrigger, isVisible = true, chat
           display: 'block',
           width: '100%',
           height: '100%',
-          border: 'none'
+          border: 'none',
+          // Chromium derives the embedded document's prefers-color-scheme from this, so gadgets
+          // styled with @media (prefers-color-scheme: dark) follow the workspace switch.
+          colorScheme: resolvedTheme,
         }}
-        sandbox="allow-scripts allow-pointer-lock allow-popups allow-popups-to-escape-sandbox"
+        // allow-downloads: a gadget can hand the viewer a file it already holds (a report's PDF, a
+        // workbook) with an <a download> link on a blob: URL, on a click.
+        sandbox="allow-scripts allow-pointer-lock allow-popups allow-popups-to-escape-sandbox allow-downloads"
         title="Gadget UI"
       />
+    </div>
+  )
+}
+
+// The pane's loading state, shown while the UI bundle loads and then over the frame until the
+// gadget paints, so the pane never sits blank.
+function GadgetLoading({ height, overlay = false }: { height: string; overlay?: boolean }) {
+  return (
+    <div
+      role="status"
+      aria-live="polite"
+      className={`flex flex-col items-center justify-center gap-3 bg-kumo-base ${overlay ? 'absolute inset-0 z-[1]' : ''}`}
+      style={{ height }}
+    >
+      <Loader size="lg" />
+      <Text variant="secondary">Loading view…</Text>
     </div>
   )
 }

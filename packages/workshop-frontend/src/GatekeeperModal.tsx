@@ -812,20 +812,14 @@ export default function GatekeeperModal({
     const vendorId = selectedConnection?.ambient ? selectedConnection.vendorId : undefined
     if (!vendorId) return
     setCreating(true)
-    let gatekeeper: RpcStub<GatekeeperClient<any>> | null = null
-    let transferred = false
     try {
       const overseer = await getOverseer()
-      gatekeeper = await overseer.newAmbientGatekeeper(vendorId)
-      await onCreated(gatekeeper)
-      transferred = true
-      onClose()
+      await handOff(overseer.newAmbientGatekeeper(vendorId) as RpcPromise<GatekeeperClient<any>>)
     } catch (err) {
       console.error('Failed to add ambient connection:', err)
       reportIssue('gatekeeper.ambient-add', err, { gatekeeperVendorId: vendorId })
       toasts.add({ title: err instanceof Error && err.message ? err.message : 'Failed to add connection', variant: 'error' })
     } finally {
-      if (gatekeeper && !transferred) gatekeeper[Symbol.dispose]()
       setCreating(false)
     }
   }

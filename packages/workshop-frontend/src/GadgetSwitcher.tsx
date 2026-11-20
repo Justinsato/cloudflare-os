@@ -1,7 +1,8 @@
 import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { CaretDown, Check, GitBranch, MagnifyingGlass } from '@phosphor-icons/react'
-import type { WorkpieceId, WorkpieceSummary } from '@gadgets/workshop-shared/api'
+import type { GadgetSummary, WorkpieceId, WorkpieceSummary } from '@gadgets/workshop-shared/api'
+import { GadgetContextMenu } from './features/gadget-deletion/GadgetContextMenu'
 import { FormatGlyph } from './components/format/FormatVisuals'
 import { isImeComposing } from './keyboardEvent'
 import {
@@ -25,9 +26,11 @@ export interface GadgetSwitcherProps {
   workpieces: readonly WorkpieceSummary[]
   selectedId: WorkpieceId | null
   onSelect: (id: WorkpieceId) => void
+  /** Offers to delete the open gadget from the button's right-click (or long-press) menu. */
+  onDelete?: (gadget: GadgetSummary) => void
 }
 
-export default function GadgetSwitcher({ workpieces, selectedId, onSelect }: GadgetSwitcherProps) {
+export default function GadgetSwitcher({ workpieces, selectedId, onSelect, onDelete }: GadgetSwitcherProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
@@ -142,38 +145,44 @@ export default function GadgetSwitcher({ workpieces, selectedId, onSelect }: Gad
   const activeOption = flat[activeIndex]
   let flatIndex = 0
 
-  return (
-    <div ref={rootRef} className="relative flex min-w-0 max-w-full">
-      <button
-        ref={buttonRef}
-        type="button"
-        onClick={() => (open ? close() : openList())}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-controls={open ? listId : undefined}
-        aria-keyshortcuts="Meta+K Control+K"
-        aria-label={selected ? `Switch output, current: ${selected.title}` : 'Switch output'}
-        title={selected?.title}
-        className="flex min-w-0 max-w-full cursor-pointer items-center gap-2 rounded-lg bg-kumo-tint px-2.5 py-1 text-left text-kumo-default transition-colors duration-150 hover:bg-kumo-fill focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
-      >
-        {selected && <SwitcherGlyph workpiece={selected} className="flex-shrink-0 text-kumo-subtle" />}
-        <span className="flex min-w-0 flex-col leading-tight">
-          <span className="truncate text-[13px] font-semibold tracking-[-0.15px]">
-            {parsed?.contents ?? 'Select an output'}
-          </span>
-          {parsed?.category && (
-            <span className="truncate text-[11px] text-kumo-subtle">
-              {parsed.category} · {parsed.action} · {parsed.cadence}
-            </span>
-          )}
+  const switchButton = (
+    <button
+      ref={buttonRef}
+      type="button"
+      onClick={() => (open ? close() : openList())}
+      aria-haspopup="listbox"
+      aria-expanded={open}
+      aria-controls={open ? listId : undefined}
+      aria-keyshortcuts="Meta+K Control+K"
+      aria-label={selected ? `Switch output, current: ${selected.title}` : 'Switch output'}
+      title={selected?.title}
+      className="flex min-w-0 max-w-full cursor-pointer items-center gap-2 rounded-lg bg-kumo-tint px-2.5 py-1 text-left text-kumo-default transition-colors duration-150 hover:bg-kumo-fill focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-kumo-ring"
+    >
+      {selected && <SwitcherGlyph workpiece={selected} className="flex-shrink-0 text-kumo-subtle" />}
+      <span className="flex min-w-0 flex-col leading-tight">
+        <span className="truncate text-[13px] font-semibold tracking-[-0.15px]">
+          {parsed?.contents ?? 'Select an output'}
         </span>
-        {selected && isDraft(selected) && (
-          <span className="flex-shrink-0 rounded-full bg-kumo-fill px-1.5 py-0.5 text-[10px] font-medium leading-none text-kumo-subtle">
-            Draft
+        {parsed?.category && (
+          <span className="truncate text-[11px] text-kumo-subtle">
+            {parsed.category} · {parsed.action} · {parsed.cadence}
           </span>
         )}
-        <CaretDown size={12} weight="bold" className="flex-shrink-0 text-kumo-subtle" />
-      </button>
+      </span>
+      {selected && isDraft(selected) && (
+        <span className="flex-shrink-0 rounded-full bg-kumo-fill px-1.5 py-0.5 text-[10px] font-medium leading-none text-kumo-subtle">
+          Draft
+        </span>
+      )}
+      <CaretDown size={12} weight="bold" className="flex-shrink-0 text-kumo-subtle" />
+    </button>
+  )
+
+  return (
+    <div ref={rootRef} className="relative flex min-w-0 max-w-full">
+      {selected?.type === 'gadget' && onDelete
+        ? <GadgetContextMenu key={selected.id} trigger={switchButton} onDelete={() => onDelete(selected)} />
+        : switchButton}
 
       {open && createPortal(
         <div

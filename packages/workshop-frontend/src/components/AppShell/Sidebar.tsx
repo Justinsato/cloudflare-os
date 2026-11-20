@@ -321,7 +321,8 @@ export default function Sidebar({
               icon={<Compass size={14} weight="regular" />}
               collapsed={collapsed}
             />
-            <UnreadSummary collapsed={collapsed} />          </nav>
+            <UnreadSummary collapsed={collapsed} />
+          </nav>
 
           {/* Workspace tools: search. Pinned so it's always reachable. */}
           <SidebarWorkspacesTools collapsed={collapsed} />

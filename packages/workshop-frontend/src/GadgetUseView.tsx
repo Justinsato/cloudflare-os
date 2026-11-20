@@ -189,7 +189,8 @@ export default function GadgetUseView({
                 refreshedAt={snapshot.refreshedAt}
               />
             )}
-          </>        ) : (
+          </>
+        ) : (
           <div className="flex h-full items-center justify-center px-6 text-center">
             <p className="text-sm text-kumo-subtle">
               {selectedGadgetId === null ? 'This workspace has no gadgets yet.' : 'Loading gadget…'}

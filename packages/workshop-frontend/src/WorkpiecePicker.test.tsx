@@ -143,6 +143,7 @@ describe('WorkpiecePicker grouped panel', () => {
         onMoveGadget={props.onMoveGadget}
         pendingActivityCount={0}
         onOpenActivity={vi.fn<() => void>()}
+        onDelete={vi.fn<(gadget: GadgetSummary) => void>()}
       />,
     ))
     return container

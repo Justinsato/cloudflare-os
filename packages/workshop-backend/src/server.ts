@@ -35,7 +35,7 @@ import { serveSiteLogo, SITE_LOGO_PATH } from "./site-logo.js";
 import { createWorkshopLogger } from "./observability";
 import { deployServiceInstall, routerVersionTag } from "./deployment-updates.js";
 import { retryOnDoReset, wrapDoStubForTelemetry } from "./do-retry";
-import { isAdminName, readWorkspacePlacements, validatePlacement, validateWorkspaceTitle, writeWorkspacePlacement } from "./workspace-placements.js";
+import { readWorkspacePlacements, validatePlacement, validateWorkspaceTitle, writeWorkspacePlacement } from "./workspace-placements.js";
 import { deviceSessionCallback } from "./auth/device-session-callback.js";
 import { openApiSessionObject, API_SESSION_HEADER, type ApiAccessSession } from "./api-session.js";
 
@@ -931,7 +931,7 @@ class PublicApiImpl extends RpcTarget implements PublicApi {
 
   constructor(private ctx: ApiContext, private env: Env,
       private abortSession: (reason: Error) => void,
-      private accessSession?: ApiAccessSession,
+      private accessSession: ApiAccessSession | undefined,
       private cliAdminsOnly: boolean,
       private via: AdminVia) {
     super();
@@ -1138,7 +1138,8 @@ class OperatorSession extends NativeRpcTarget {
   constructor(ctx: ExecutionContext, env: Env, userId: DurableObjectId) {
     super();
     this.#env = env;
-    this.#api = new AuthenticatedApiImpl(ctx, env, userId, () => {});
+    // A Worker binding, not `cf-os api`: its admin audit records read "api".
+    this.#api = new AuthenticatedApiImpl(ctx, env, userId, () => {}, "api");
     this.#overseers = ctx.exports.OverseerDurableObject;
     this.#userId = userId;
   }
@@ -1360,22 +1361,15 @@ export default {
 
       // A WebSocket session lives in its own ApiSessionDurableObject: a stateless isolate that
       // holds one is evicted at the runtime's discretion, which drops the socket mid-session.
+      // The object reads the client's kind from the same forwarded request (apiClientKind).
       if (req.headers.get("Upgrade")?.toLowerCase() === "websocket") {
         return openApiSessionObject(req, ctx.exports.ApiSessionDurableObject, accessSession);
       }
 
-      // `cf-os api` names itself in its User-Agent, and on a deployment (any WORKSHOP_ENVIRONMENT
-      // but "development" or "test") it may act only as a deployment admin (PublicApiImpl's
-      // #limitCli). A speed bump against casual use, not a boundary: a client can send any
-      // User-Agent, and the API's own checks authorize. For the same reason the User-Agent only
-      // labels admin audit records (AdminVia).
-      let local = env.WORKSHOP_ENVIRONMENT === "development" || env.WORKSHOP_ENVIRONMENT === "test";
-      let cli = CF_OS_CLI_USER_AGENT.test(req.headers.get("User-Agent") ?? "");
-
+      let { cliAdminsOnly, via } = apiClientKind(req, env);
       let { abortSession, abortSignal } = abortSessionCallback();
       return await newWorkersRpcResponse(req,
-          new PublicApiImpl(ctx, env, abortSession, accessSession,
-              !local && cli, cli ? "cli" : "api"),
+          new PublicApiImpl(ctx, env, abortSession, accessSession, cliAdminsOnly, via),
           { abortSignal });
     }
 
@@ -1462,6 +1456,17 @@ function abortSessionCallback() {
  * sees close code 1006 and every call in flight fails). A Durable Object holding an accepted
  * WebSocket stays in memory until the socket closes. The object keeps no storage.
  */
+// `cf-os api` names itself in its User-Agent, and on a deployment (any WORKSHOP_ENVIRONMENT but
+// "development" or "test") it may act only as a deployment admin (PublicApiImpl's #limitCli). A
+// speed bump against casual use, not a boundary: a client can send any User-Agent, and the API's
+// own checks authorize. For the same reason the User-Agent only labels admin audit records
+// (AdminVia).
+function apiClientKind(req: Request, env: Env): { cliAdminsOnly: boolean; via: AdminVia } {
+  let local = env.WORKSHOP_ENVIRONMENT === "development" || env.WORKSHOP_ENVIRONMENT === "test";
+  let cli = CF_OS_CLI_USER_AGENT.test(req.headers.get("User-Agent") ?? "");
+  return { cliAdminsOnly: !local && cli, via: cli ? "cli" : "api" };
+}
+
 export class ApiSessionDurableObject extends DurableObject<Env> {
   override async fetch(req: Request): Promise<Response> {
     let raw = req.headers.get(API_SESSION_HEADER);
@@ -1469,8 +1474,10 @@ export class ApiSessionDurableObject extends DurableObject<Env> {
       return new Response("Not Found", { status: 404 });
     }
     let accessSession = (JSON.parse(raw) as ApiAccessSession | null) ?? undefined;
+    let { cliAdminsOnly, via } = apiClientKind(req, this.env);
     let { abortSession, abortSignal } = abortSessionCallback();
     return newWorkersWebSocketRpcResponse(req,
-        new PublicApiImpl(this.ctx, this.env, abortSession, accessSession), { abortSignal });
+        new PublicApiImpl(this.ctx, this.env, abortSession, accessSession, cliAdminsOnly, via),
+        { abortSignal });
   }
 }

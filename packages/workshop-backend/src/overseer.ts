@@ -295,8 +295,13 @@ function gadgetModules(files: ReadonlyMap<string, string>): Record<string, strin
 // be sent over RPC, the stub is wrapped in a Proxy to make it look like an RpcTarget instead.
 // `onDispose` runs when the client disposes the stub, and `onError` receives each error one of
 // the gadget's methods throws, as a console log event.
+//
+// `aroundCall`, when given, runs each method call: it receives a thunk that makes the call and
+// returns the call's result (Brick: getGadgetFacet uses it for the gadget call slots).
 function facetRpcStub(facet: Fetcher<DurableObject>, onDispose?: () => void,
-                      onError?: (event: ConsoleLogEvent) => void): RpcStub<any> {
+                      onError?: (event: ConsoleLogEvent) => void,
+                      aroundCall?: (call: () => Promise<unknown>) => Promise<unknown>)
+    : RpcStub<any> {
   // TODO: Make possible to return facet stub over RPC. This Proxy is a hack.
   let proxy = new Proxy(facet, {
     get(target, prop, receiver) {
@@ -328,7 +333,8 @@ function facetRpcStub(facet: Fetcher<DurableObject>, onDispose?: () => void,
       //   possibly a runtime bug which needs investigation.
       // TODO: Fix exception reporting it tail workers so we can remove this hack.
       return (...args: unknown[]) => {
-        let result: Promise<unknown> = Reflect.apply(method, target, args);
+        let call = () => Reflect.apply(method, target, args) as Promise<unknown>;
+        let result: Promise<unknown> = aroundCall ? aroundCall(call) : call();
         if (!onError) return result;
         return result.catch((err: unknown) => {
           let msg = err;
@@ -1216,9 +1222,9 @@ class OverseerImpl implements AgentHooks {
   #gadgetCallsInFlight = 0;
   #gadgetCallQueue: (() => void)[] = [];
 
-  // Count a session for its lifetime. Returns a function that uncounts it, like joinPresence().
   // Count a session for its lifetime, as one holding `gadgetId` if it is a "use" session holding
-  // a gadget. Returns a function that uncounts it, like joinPresence().  //
+  // a gadget. Returns a function that uncounts it, like joinPresence().
+  //
   // Deliberately not derived from #presence, which looks like it holds the same thing: a session
   // joins presence only once its fetchProfile() resolves, so a just-opened session is briefly
   // invisible there. That is fine for a roster and wrong for an access decision, which must never
@@ -3249,7 +3255,7 @@ class OverseerImpl implements AgentHooks {
     if (defaultIndex !== undefined) result.defaultGadget = defaultIndex;
 
     for (let gadget of gadgets) {
-      let files = [...await this.gitStore.readCommitFiles(gadget.commitId!)];
+      let files = [...this.gitCache.readCommitFiles(gadget.commitId!)];
       let bindings: Record<string, WorkspaceTemplateBinding> = {};
       for (let [name, edge] of this.visibleBindings(gadget)) {
         let sibling = indexOf.get(edge.target);
@@ -3304,7 +3310,7 @@ class OverseerImpl implements AgentHooks {
     // Code first: every permanent gadget is born with a head (see GadgetRecord.commitId).
     let commits: string[] = [];
     for (let gadget of template.gadgets) {
-      commits.push(await this.gitStore.writeFilesAsCommit(new Map(gadget.files), {
+      commits.push(await this.gitCache.writeFilesAsCommit(new Map(gadget.files), {
         author, timestamp: new Date(), parents: [], message: `Copy gadget: ${gadget.title}`,
       }));
     }
@@ -3715,7 +3721,8 @@ class OverseerImpl implements AgentHooks {
       await record.controller.disable();
     }
     this.storage.boundHooks.delete(record.id);
-    this.storage.hookRuns.delete(record.id);    this.sessionWatchers.end(`hook:${record.id}`);
+    this.storage.hookRuns.delete(record.id);
+    this.sessionWatchers.end(`hook:${record.id}`);
     stampBindHookAction(this.storage, record.actionId, false, {clearHookId: true});
   }
 
@@ -6662,7 +6669,8 @@ class OverseerImpl implements AgentHooks {
   }
 
   // Get an RpcStub for the gadget facet, which can be returned to the client.
-  // Get an RpcStub for the gadget facet, which can be returned to the client (see facetRpcStub).  //
+  // Get an RpcStub for the gadget facet, which can be returned to the client (see facetRpcStub).
+  //
   // `joinAs` counts the returned stub toward #hasCollaboratorSession for its own lifetime, like
   // every other capability minted into a collaborator's session (see GadgetClientImpl): the facet
   // is a live channel into the gadget's state -- including whatever an enabled hook writes into
@@ -6670,11 +6678,31 @@ class OverseerImpl implements AgentHooks {
   // while the retained stub kept reading. Passed by the collaborator-facing connectToGadget
   // mints; omitted for the owner's and for internal callers (binding loopbacks already live
   // inside a counted session).
-  async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number, joinAs?: SessionHolder)
-      : Promise<RpcStub<any>> {    let facet = await this.getGadgetFacetFetcher(gadgetId, chatId);
+  //
+  // Brick: each call waits for a gadget call slot (see #acquireGadgetCallSlot) and is observed
+  // (see observeGadgetCall). `nested` marks a call made from inside a gadget call that already
+  // holds a slot (a binding loopback from one gadget into another, or into itself via
+  // env.GADGET). Those skip the slot queue: queueing them would have the outer calls wait on slots
+  // only they can free.
+  async getGadgetFacet(gadgetId: WorkpieceId, chatId?: number, joinAs?: SessionHolder,
+                       nested?: boolean): Promise<RpcStub<any>> {
+    let facet = await this.getGadgetFacetFetcher(gadgetId, chatId);
     let leaveSession = joinAs ? this.joinSession(joinAs, gadgetId) : undefined;
     return facetRpcStub(facet, leaveSession,
-        event => this.deliverGadgetLogs(chatId ?? null, [event]));
+        event => this.deliverGadgetLogs(chatId ?? null, [event]),
+        async call => {
+          let release = nested ? () => {} : await this.#acquireGadgetCallSlot();
+          let result: Promise<unknown>;
+          try {
+            result = Promise.resolve(call());
+          } catch (err) {
+            release();
+            throw err;
+          }
+          result.then(release, release);
+          this.observeGadgetCall(gadgetId, result);
+          return result;
+        });
   }
 
   // --- Static snapshots (see Overseer.getGadgetSnapshot) ---
@@ -7293,7 +7321,9 @@ class OverseerImpl implements AgentHooks {
     for (let hook of Array.from(this.storage.boundHooks.list())) {
       if (hook.gatekeeperId !== id) continue;
       this.storage.boundHooks.delete(hook.id);
-      this.storage.hookRuns.delete(hook.id);      this.sessionWatchers.end(`hook:${hook.id}`);      stampBindHookAction(this.storage, hook.actionId, false, {clearHookId: true});
+      this.storage.hookRuns.delete(hook.id);
+      this.sessionWatchers.end(`hook:${hook.id}`);
+      stampBindHookAction(this.storage, hook.actionId, false, {clearHookId: true});
       if (hook.enabled) {
         this.ctx.waitUntil(hook.controller.disable().catch(error => {
           this.logger.warn("failed to disable hook for a removed connection", {
@@ -14819,7 +14849,7 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let facet = await this.impl.getGatekeeperFacet(record.id);
     this.impl.assertGatekeeperUsable(record.id);
     return new GatekeeperClientImpl(
-        this.impl, record.id, facet, this.clientUserId, this.#mintedCapabilityKind());
+        this.impl, record.id, facet, this.clientUserId, this.#mintedCapabilityHolder());
   }
 
   async newAgentSpawnerGatekeeper({env, ...config}: AgentSpawnerConfig)
@@ -14924,8 +14954,22 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
       let share = action.workspaceShare;
       if (!share) throw new Error(`Not a workspace share request: ${action.id}`);
       let profile = await this.#getClientProfile();
-      let added = await this.addCollaborator(share.email, share.role,
-          "Shared on the workspace agent's request.");
+      // "build" is the workspace grant. A workspace-wide "use" can no longer be granted (see
+      // CollaboratorGrant), so "use" grants each gadget the workspace holds now, one by one.
+      let grants: CollaboratorGrant[] = share.role === "build" ? ["workspace"]
+          : [...this.impl.storage.gadgets.list()]
+              .filter((g): g is GadgetRecord => g.type === "gadget" && !g.pending)
+              .map(g => ({gadgetId: g.id}));
+      if (grants.length === 0) {
+        throw new Error("This workspace has no gadgets yet to share for use. Reject the request, " +
+                        "or approve it again once it has one.");
+      }
+      let added: CollaboratorInfo | null = null;
+      for (let grant of grants) {
+        added = await this.addCollaborator(share.email, grant,
+            "Shared on the workspace agent's request.");
+        if (!added) break;
+      }
       if (!added) {
         throw new Error(`${share.email} has no account on this OS yet: they must sign in once ` +
                         "before the workspace can be shared with them. Approve again after " +
@@ -14992,22 +15036,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
   }
 
   async disableHook(id: number): Promise<void> {
-    let record = this.impl.storage.boundHooks.get(id);
-    if (!record) throw new Error("Invalid hook ID.");
-
-    if (record.enabled) {
-      await record.controller.disable();
-
-      // Re-read after the await: a deleteHook/removeGatekeeper landing while disable() was in
-      // flight already reached the goal state (no hook), and putting the captured record back
-      // would resurrect it as a zombie -- deleting the record must stay the authoritative kill.
-      let current = this.impl.storage.boundHooks.get(id);
-      if (!current) return;
-      current.enabled = false;
-      this.impl.storage.boundHooks.put(current);
-      this.impl.sessionWatchers.end(`hook:${id}`);
-      stampBindHookAction(this.impl.storage, current.actionId, false);
-    }  }
+    return disableBoundHook(this.impl, id);
+  }
 
   async deleteHook(id: number): Promise<void> {
     return this.impl.deleteHook(id);
@@ -17334,6 +17364,7 @@ async function disableBoundHook(impl: OverseerImpl, id: number): Promise<void> {
   if (!current) return;
   current.enabled = false;
   impl.storage.boundHooks.put(current);
+  impl.sessionWatchers.end(`hook:${id}`);
   stampBindHookAction(impl.storage, current.actionId, false);
 }
 
