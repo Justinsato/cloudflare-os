@@ -9,7 +9,7 @@ import type { PublicApi } from "@gadgets/workshop-shared/api";
 import { describe, expect, it, vi } from "vitest";
 import type { AdminSettingActor } from "../src/admin-access.js";
 import type { UserDurableObject } from "../src/user.js";
-import server from "../src/server.js";
+import server, { ApiSessionDurableObject } from "../src/server.js";
 
 declare module "cloudflare:workers" {
   interface ProvidedEnv {
@@ -56,7 +56,8 @@ async function connect(deploymentEnv: Cloudflare.Env, userAgent: string | undefi
   if (userAgent !== undefined) headers["User-Agent"] = userAgent;
   if (as !== undefined) headers["cf-access-jwt-assertion"] = as;
   // The first /api request installs the bundled blueprints, which needs storage these tests lack.
-  // Admin config changes land in `configChanges`.
+  // Admin config changes land in `configChanges`. The WebSocket session's own object runs here, on
+  // `deploymentEnv`: the deployed one reads the deployment's env, which these tests vary.
   const ctx = createExecutionContext();
   Object.defineProperty(ctx, "exports", { value: Object.create(ctx.exports, {
     AdminSettings: { value: { getByName: () => ({
@@ -65,6 +66,14 @@ async function connect(deploymentEnv: Cloudflare.Env, userAgent: string | undefi
         configChanges.push({ patch, actor });
       },
     }) } },
+    ApiSessionDurableObject: { value: {
+      newUniqueId: () => ({}),
+      get: () => ({
+        // Its fetch() reads only `ctx` and `env`, so it runs bound to these.
+        fetch: (req: Request) => ApiSessionDurableObject.prototype.fetch.call(
+            { ctx, env: deploymentEnv } as unknown as ApiSessionDurableObject, req),
+      }),
+    } },
   }) });
   const response = await server.fetch(new Request(`${ORIGIN}/api`, { headers }), deploymentEnv, ctx);
   expect(response.status).toBe(101);

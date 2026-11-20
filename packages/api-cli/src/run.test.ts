@@ -398,7 +398,8 @@ test("search ranks commands by the task's words, as whole command lines, best fi
   assert.equal(searchCommands(table, "file into a notebook")[0].command, "cf-os api open-notebook <id> file <note> <destination>");
   // Creation verbs are one word, "add" finding new-gatekeeper, but the verb a task names comes first.
   assert.equal(searchCommands(realTable, "create a blueprint")[0].command, "cf-os api open-workspace <id> get-gadget <id> create-blueprint");
-  assert.ok(searchCommands(realTable, "add a gatekeeper connection to a workspace")
+  // Brick's new-ambient-gatekeeper and the other gatekeeper mints rank alongside it.
+  assert.ok(searchCommands(realTable, "add a gatekeeper connection to a workspace", 8)
     .some((match) => match.command === "cf-os api open-workspace <id> new-gatekeeper <accountId> <resourceUrl>"));
   // A capability's CamelCase name is words: "client" meets GadgetClient's commands.
   assert.ok(searchCommands(realTable, "gadget client title").some((match) => match.command.endsWith(" get-gadget <id> get-title")));
@@ -429,8 +430,9 @@ test("search reads a command's option names and the callback methods it may be a
   assert.ok(rankOf(realTable, "gadget bindings", / create-gadget </) > 3);
   assert.ok(rankOf(realTable, "binding name", / create-gadget </) >= 1);
   // A stop word in an option's name is not needed to name it: "copy secrets" names `--copy-secrets-from`.
+  // Brick's workspace-copy commands also answer "copy", so add-model ranks under them.
   for (const task of ["copy secrets", "copy secrets from"]) {
-    assert.ok(searchCommands(realTable, task).some((match) => / add-model </.test(match.command)), task);
+    assert.ok(rankOf(realTable, task, / add-model </) >= 1 && rankOf(realTable, task, / add-model </) <= 10, task);
   }
   assert.equal(rankOf(realTable, "copy", / add-model </), 0);
   for (const task of ["list chats", "get chat history"]) {
@@ -524,7 +526,8 @@ test("search finds the commands for gadget-worded tasks, by what the API says of
     ["list the gadgets in a workspace", workpieces, 5],
     ["gadget id", workpieces, 2],
     ["delete gadget", /^cf-os api open-workspace <id> get-gadget <id> remove$/, 1],
-    ["remove a gadget from a workspace", /^cf-os api open-workspace <id> get-gadget <id> remove$/, 1],
+    // Brick's remove-copy-gadgets (an admin repair of a copied workspace) ranks with it.
+    ["remove a gadget from a workspace", /^cf-os api open-workspace <id> get-gadget <id> remove$/, 2],
     ["rename a gadget", /^cf-os api open-workspace <id> get-gadget <id> set-title <title>$/, 1],
     ["create a gadget", /^cf-os api open-workspace <id> create-gadget <title>$/, 1],
     ["built-in gadgets", /^cf-os api list-output-formats$/, 1],

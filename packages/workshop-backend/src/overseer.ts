@@ -7162,8 +7162,8 @@ class OverseerImpl implements AgentHooks {
   // An AI model connection on the model `chatMeta` resolved for `modelId` (see
   // Overseer.newAiModelGatekeeper; also a workspace copy's, for the new owner's model).
   async addAiModelGatekeeper(
-      chatMeta: UserChatContext, modelId: string, actorUserId: string, joinAs?: SessionHolder)
-      : Promise<GatekeeperClient<any>> {
+      chatMeta: UserChatContext, modelId: string, actorUserId: string, joinAs?: SessionHolder,
+      createdBy?: AiChatAuthorInfo): Promise<GatekeeperClient<any>> {
     let props: AiModelGatekeeperProps = {
       displayName: chatMeta.aiModel!.profile.name,
       config: chatMeta.aiModel!.config,
@@ -7182,7 +7182,7 @@ class OverseerImpl implements AgentHooks {
         modelKind(props.config.provider, props.config.model) === "decision"
             ? this.ctx.exports.DecisionModelGatekeeper({props})
             : this.ctx.exports.LanguageModelGatekeeper({props}),
-        creationSpec, actorUserId, joinAs);
+        creationSpec, actorUserId, joinAs, undefined, createdBy);
   }
 
   // Resolves once no agent turn is running or being prepared for the chat (at once if none is).
@@ -14823,7 +14823,8 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     let chatMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(modelId), this.impl.logger);
     let result = await this.impl.addAiModelGatekeeper(
-        chatMeta, modelId, this.clientUserId, this.#mintedCapabilityHolder());
+        chatMeta, modelId, this.clientUserId, this.#mintedCapabilityHolder(),
+        await this.#getClientProfile());
     await this.recordConnectionCreated(result, "ai_model");
     return result;
   }

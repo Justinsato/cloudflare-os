@@ -76,7 +76,10 @@ async function uiOf(workspace: RpcStub<Overseer>, title: string): Promise<string
   if (!summary) return undefined;
   using gadget = await workspace.getGadget(summary.id);
   const bundle = await gadget.getUiBundle();
-  return bundle && "jsCode" in bundle ? bundle.jsCode : undefined;
+  if (!bundle) return undefined;
+  // APP_UI has a default export, so it is served as modules, entry first.
+  return "jsCode" in bundle ? bundle.jsCode
+      : bundle.modules.find(module => module.path === "client.js")?.code;
 }
 
 it("copies a workspace for its owner, its build collaborators, and (as an admin) for another user",
