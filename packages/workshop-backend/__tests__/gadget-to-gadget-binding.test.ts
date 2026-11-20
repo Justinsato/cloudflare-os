@@ -48,7 +48,7 @@ async function withGadgets(fn: (impl: any) => Promise<void>): Promise<void> {
   await runInDurableObject(stub, async (instance: OverseerDurableObject) => {
     let impl = (instance as unknown as { impl: any }).impl;
     for (let [id, code, title] of [[CALLER, CALLER_JS, "Caller"], [TARGET, TARGET_JS, "Target"]] as const) {
-      let commitId = await impl.gitStore.writeFilesAsCommit(new Map([["server.js", code]]), {
+      let commitId = await impl.gitCache.writeFilesAsCommit(new Map([["server.js", code]]), {
         parents: [],
         author: { name: "Alice", email: "alice@example.com" },
         message: "test commit",

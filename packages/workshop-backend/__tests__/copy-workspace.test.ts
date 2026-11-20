@@ -33,7 +33,7 @@ async function inWorkspace(fn: (impl: any, instance: OverseerDurableObject) => P
 }
 
 async function commitFiles(impl: any, files: Record<string, string>): Promise<string> {
-  return await impl.gitStore.writeFilesAsCommit(new Map(Object.entries(files)), {
+  return await impl.gitCache.writeFilesAsCommit(new Map(Object.entries(files)), {
     parents: [],
     author: { name: "Owner", email: "owner@example.com" },
     message: "test commit",
@@ -203,7 +203,7 @@ describe("buildFromTemplate", () => {
       expect(rentRoll.upstream).toEqual({});
       expect(impl.storage.gadgetOrder.get()).toEqual([rentRoll.id, home.id]);
 
-      let files = await impl.gitStore.readCommitFiles(rentRoll.commitId);
+      let files = await impl.gitCache.readCommitFiles(rentRoll.commitId);
       expect(Object.fromEntries(files)).toEqual({ "index.ts": "rent roll", "ui/App.tsx": "<App/>" });
 
       // The sibling edge points at the copy; the sheet is one connection, shared by both gadgets
@@ -379,7 +379,7 @@ describe("exportWorkspaceTemplate", () => {
     impl.users = { idFromString: (id: string) => id, get: () => userDo };
     impl.wrapUserDo = (stub: unknown) => stub;
     impl.ensureAmbientCapsules = async () => {};
-    impl.authorizeCollaborator = async () => role;
+    impl.authorizeCollaborator = async () => role === "build" ? { role } : { role, gadgetIds: [] };
     return await instance.open("collaborator-user-do", "collab-profile",
         new NativeRpcStub<() => void>(() => {})) as Overseer;
   }

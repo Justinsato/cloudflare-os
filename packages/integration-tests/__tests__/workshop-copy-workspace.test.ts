@@ -45,8 +45,9 @@ async function headOf(workpieces: WorkpieceRecorder, gadgetId: WorkpieceId, afte
   });
 }
 
-// A workspace with one committed gadget, "Rent Roll", whose UI is APP_UI.
-async function seedWorkspace(owner: RpcStub<AuthenticatedApi>): Promise<string> {
+// A workspace with one committed gadget, "Rent Roll", whose UI is APP_UI: its id and the gadget's.
+async function seedWorkspace(owner: RpcStub<AuthenticatedApi>)
+    : Promise<{ id: string; gadgetId: WorkpieceId }> {
   using workspace = await owner.newWorkspace();
   const workpieces = new WorkpieceRecorder();
   using _subscription = await workspace.subscribeToWorkpieces(workpieces);
@@ -63,7 +64,7 @@ async function seedWorkspace(owner: RpcStub<AuthenticatedApi>): Promise<string> 
   expect(await workspace.mergeChanges(seed)).toEqual({ outcome: "merged" });
   await headOf(workpieces, gadgetId, empty);
   await workspace.setTitle("Capital · Review · Rent Roll · Monthly");
-  return (await workspace.getMetadata()).id;
+  return { id: (await workspace.getMetadata()).id, gadgetId };
 }
 
 async function uiOf(workspace: RpcStub<Overseer>, title: string): Promise<string | undefined> {
@@ -74,7 +75,11 @@ async function uiOf(workspace: RpcStub<Overseer>, title: string): Promise<string
       s => s.type === "gadget" && s.title === title);
   if (!summary) return undefined;
   using gadget = await workspace.getGadget(summary.id);
-  return (await gadget.getUiBundle())?.jsCode;
+  const bundle = await gadget.getUiBundle();
+  if (!bundle) return undefined;
+  // APP_UI has a default export, so it is served as modules, entry first.
+  return "jsCode" in bundle ? bundle.jsCode
+      : bundle.modules.find(module => module.path === "client.js")?.code;
 }
 
 it("copies a workspace for its owner, its build collaborators, and (as an admin) for another user",
@@ -84,7 +89,7 @@ it("copies a workspace for its owner, its build collaborators, and (as an admin)
   using ownerPublic = connect(requireHarness().url);
   using owner = await signUp(ownerPublic, ownerName!);
   await expect(owner.copyWorkspace("not-an-id")).rejects.toThrow(/Not a workspace id/);
-  const sourceId = await seedWorkspace(owner);
+  const { id: sourceId, gadgetId } = await seedWorkspace(owner);
 
   // The owner copies it: same title by default, same code, listed at once.
   const copy = await owner.copyWorkspace(sourceId);
@@ -108,8 +113,8 @@ it("copies a workspace for its owner, its build collaborators, and (as an admin)
   using stranger = await signUp(strangerPublic, strangerName!);
   {
     using source = await owner.openWorkspace(sourceId);
-    expect(await source.addCollaborator(buildName!, "build")).not.toBeNull();
-    expect(await source.addCollaborator(useName!, "use")).not.toBeNull();
+    expect(await source.addCollaborator(buildName!, "workspace")).not.toBeNull();
+    expect(await source.addCollaborator(useName!, { gadgetId })).not.toBeNull();
   }
   const builderCopy = await builder.copyWorkspace(sourceId, { title: "Ops · Review · Rent Roll" });
   expect(builderCopy.title).toBe("Ops · Review · Rent Roll");
@@ -124,7 +129,7 @@ it("copies a workspace for its owner, its build collaborators, and (as an admin)
   using admin = await signUp(adminPublic, ADMIN_USERNAME);
   {
     using source = await owner.openWorkspace(sourceId);
-    expect(await source.addCollaborator(ADMIN_USERNAME, "build")).not.toBeNull();
+    expect(await source.addCollaborator(ADMIN_USERNAME, "workspace")).not.toBeNull();
   }
   await expect(admin.copyWorkspace(sourceId, { forUser: newName }))
       .rejects.toThrow(/has not signed in to this OS yet/);

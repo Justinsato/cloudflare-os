@@ -88,7 +88,7 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
     impl.markOutputsDirty = () => {};
     impl.syncOutputsTo = async () => {};
     impl.getSharingManager = async () => ({});
-    impl.authorizeCollaborator = async () => "build";
+    impl.authorizeCollaborator = async () => ({ role: "build" });
     // No admin config in the test KV (defaults apply), and a loopback stand-in for the hook
     // initiator enableHook hands the gatekeeper.
     impl.env = { ...impl.env, BLUEPRINTS: { get: async () => null } };

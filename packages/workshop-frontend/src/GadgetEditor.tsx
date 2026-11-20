@@ -74,7 +74,6 @@ import { formatOf } from './components/format/formats'
 import { FormatGlyph } from './components/format/FormatVisuals'
 import ShareModal from './ShareModal'
 import { DeleteGadgetDialog } from './features/gadget-deletion/DeleteGadgetDialog'
-import { GadgetContextMenu } from './features/gadget-deletion/GadgetContextMenu'
 import { GadgetPresence } from './components/GadgetPresence'
 import BlueprintModal from './BlueprintModal'
 import { UpdateFromBlueprintDialog } from './features/blueprint-updates/UpdateFromBlueprintDialog'
@@ -257,101 +256,6 @@ function PaneLabel({
   )
 }
 
-// Breathing room left between the open tab and the edge it was scrolled away from, so a tab that
-// only just fits doesn't look clipped.
-const TAB_REVEAL_MARGIN = 8
-
-// The workpiece tabs in the pane header, shown when the workspace holds more than one. The Outputs
-// rail only shows when the pane is closed, so without these an open output gives no sign that the
-// workspace holds others.
-function PaneWorkpieceTabs({
-  gadgets,
-  activeId,
-  onSelect,
-  onDelete,
-}: {
-  gadgets: WorkpieceSummary[]
-  activeId: WorkpieceId | null
-  onSelect: (id: WorkpieceId) => void
-  // Asks to delete a gadget, from its tab's right-click menu; the caller confirms it.
-  onDelete: (gadget: GadgetSummary) => void
-}) {
-  const scrollerRef = useRef<HTMLDivElement>(null)
-  const activeRef = useRef<HTMLButtonElement>(null)
-
-  // Whatever is open must be fully readable; the rest may sit off-scroll. Once per selection
-  // change isn't enough, because the layout keeps moving afterwards: the pane animates its width,
-  // and a new output's title arrives after its tab first renders. So re-run on the next frame and
-  // on every resize of the strip.
-  //
-  // Scrolls the strip by hand rather than with scrollIntoView, which is free to scroll every
-  // scrollable ancestor, including the page.
-  useEffect(() => {
-    const scroller = scrollerRef.current
-    if (!scroller) return
-
-    const reveal = () => {
-      const active = activeRef.current
-      if (!active) return
-      const tab = active.getBoundingClientRect()
-      const view = scroller.getBoundingClientRect()
-      if (tab.right > view.right) {
-        scroller.scrollLeft += tab.right - view.right + TAB_REVEAL_MARGIN
-      } else if (tab.left < view.left) {
-        scroller.scrollLeft -= view.left - tab.left + TAB_REVEAL_MARGIN
-      }
-    }
-
-    reveal()
-    const frame = requestAnimationFrame(reveal)
-    // Catches the pane's width animation, which changes the strip's size for ~200ms after this runs.
-    const observer = new ResizeObserver(reveal)
-    observer.observe(scroller)
-    return () => {
-      cancelAnimationFrame(frame)
-      observer.disconnect()
-    }
-  }, [activeId, gadgets])
-
-  return (
-    <div
-      ref={scrollerRef}
-      className="hide-scrollbar flex min-w-0 flex-1 items-center gap-1 overflow-x-auto"
-    >
-      {gadgets.map(gadget => {
-        const active = gadget.id === activeId
-        const tab = (
-          <button
-            key={gadget.id}
-            ref={active ? activeRef : undefined}
-            type="button"
-            onClick={() => onSelect(gadget.id)}
-            title={gadget.title}
-            aria-current={active ? 'page' : undefined}
-            // The open one gets room for its whole name; the others yield first.
-            className={`inline-flex flex-shrink-0 cursor-pointer items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-[13px] font-medium tracking-[-0.15px] transition-colors duration-150 ${
-              active
-                ? 'max-w-[240px] bg-kumo-tint text-kumo-default'
-                : 'max-w-[150px] text-kumo-subtle hover:bg-kumo-tint/50 hover:text-kumo-default data-[popup-open]:bg-kumo-tint/50 data-[popup-open]:text-kumo-default'
-            }`}
-          >
-            <WorkpieceGlyph summary={gadget} className="flex-shrink-0" />
-            <span className="truncate">{gadget.title}</span>
-            {gadget.type === 'gadget' && gadget.chatId !== undefined && (
-              <span className="flex-shrink-0 rounded-full bg-kumo-fill px-1.5 py-0.5 text-[10px] font-medium leading-none text-kumo-subtle">
-                Draft
-              </span>
-            )}
-          </button>
-        )
-        // A worktree is the chat's own and goes with it.
-        return gadget.type === 'gadget'
-          ? <GadgetContextMenu key={gadget.id} trigger={tab} onDelete={() => onDelete(gadget)} />
-          : tab
-      })}
-    </div>
-  )
-}
 function PaneTab({
   active,
   label,
@@ -2414,9 +2318,10 @@ export default function GadgetEditor() {
 
         {/* ── Resize handle ───────────────────────────────────────────────────── */}
         <div
-          className={`relative flex-shrink-0 touch-none overflow-visible bg-kumo-line max-md:hidden ${chatRailOnly ? '' : 'cursor-col-resize'} ${workspaceTransitionClass}`}
+          className={`relative z-10 flex-shrink-0 touch-none overflow-visible bg-kumo-line max-md:hidden ${chatRailOnly ? '' : 'cursor-col-resize'} ${workspaceTransitionClass}`}
           style={{ width: splitLayout ? 1 : 0 }}
-          onPointerDown={chatRailOnly ? undefined : handleResizePointerDown}          onPointerMove={handleResizePointerMove}
+          onPointerDown={chatRailOnly ? undefined : handleResizePointerDown}
+          onPointerMove={handleResizePointerMove}
           onPointerUp={handleResizePointerUp}
           onPointerCancel={handleResizePointerUp}
         >
@@ -2460,8 +2365,10 @@ export default function GadgetEditor() {
                     workpieces={visibleWorkpieces}
                     selectedId={selectedWorkpieceId}
                     onSelect={handleSelectWorkpiece}
+                    onDelete={requestGadgetDeletion}
                   />
-                </div>              )}
+                </div>
+              )}
             </div>
 
             <div className="flex flex-shrink-0 items-center gap-1.5">
@@ -2658,36 +2565,17 @@ export default function GadgetEditor() {
               onSelect={handleSelectWorkpiece}
               onRename={handleRenameWorkpiece}
               onMoveGadget={canReorderGadgets ? handleMoveGadget : undefined}
-              onDelete={requestGadgetDeletion}              pendingActivityCount={pendingActionCount}
+              onDelete={requestGadgetDeletion}
+              pendingActivityCount={pendingActionCount}
               onOpenActivity={() => openActivity(pendingActionCount > 0 ? 'review' : 'history')}
             />
           </div>
         )}
       </div>
 
-      {/* ═══ PREVIEW OVERLAY ══════════════════════════════════════════════════ */}
-      {previewMode && (
-        <div className="absolute inset-x-0 bottom-0 bg-kumo-base z-10" style={{ top: TOPBAR_H }}>
-          {selectedGadgetStub && (
-            <GadgetUI
-              key={selectedGadgetId}
-              gadget={selectedGadgetStub}
-              height="100%"
-              reloadTrigger={uiReloadTrigger}
-              isVisible={true}
-              chatId={previewChatId}
-              onConsoleLog={handleClientConsoleLog}
-              onOpenWorkpiece={handleOpenWorkpieceFromGadget}
-              viewState={selectedGadgetViewState}
-              onViewStateChange={handleGadgetViewStateChange}
-            />
-          )}
-        </div>
-      )}
-
-      {/* Share modal */}
       {/* Share modal. Kept mounted while closed, so an invite still in flight reports back when
-          it is reopened; keyed by what it shares, so nothing carries over between targets. */}      {overseer && metadata && (
+          it is reopened; keyed by what it shares, so nothing carries over between targets. */}
+      {overseer && metadata && (
         <>
           {(sharedGadgetId === null || sharedGadget) && (
             <ShareModal

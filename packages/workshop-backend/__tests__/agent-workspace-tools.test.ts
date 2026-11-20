@@ -47,7 +47,7 @@ type Harness = {
   initialized: {id: string, ownerUserId: string, title: string}[];
   activated: string[];
   titleUpdates: {id: string, title: string}[];
-  collaborators: {username: string, role: string}[];
+  collaborators: {username: string, grant: unknown}[];
 };
 
 async function withImpl(fn: (h: Harness) => Promise<void>, opts: {admins?: string[]} = {})
@@ -112,12 +112,12 @@ async function withImpl(fn: (h: Harness) => Promise<void>, opts: {admins?: strin
     impl.markOutputsDirty = () => {};
     impl.syncOutputsTo = async () => {};
     impl.getSharingManager = async () => ({
-      addCollaborator: ({profile, role}: {profile: AiChatAuthorInfo, role: string}) => {
-        h.collaborators.push({username: profile.id, role});
-        return { profileId: profile.id, role };
+      addCollaborator: ({profile, grant}: {profile: AiChatAuthorInfo, grant: unknown}) => {
+        h.collaborators.push({username: profile.id, grant});
+        return { profileId: profile.id, grant };
       },
     });
-    impl.authorizeCollaborator = async () => "build";
+    impl.authorizeCollaborator = async () => ({ role: "build" });
     impl.storage.chatMeta.put(
         { id: CHAT_ID, title: "Chat", started: new Date(0), lastActive: new Date(0) });
     addUserMessage(impl, "Hi");
@@ -404,14 +404,14 @@ describe("requestWorkspacePlacement", () => {
 describe("requestWorkspaceShare", () => {
   it("adds the collaborator only when the owner approves", () => withImpl(async h => {
     let contexts = await runToolTurn(h.impl, [fauxToolCall("requestWorkspaceShare", {
-      email: " Collab@Example.com ", role: "use", reason: "Ji reviews the outputs.",
+      email: " Collab@Example.com ", role: "build", reason: "Ji reviews the outputs.",
     })]);
     let [record] = actionsUnder(h.impl, -5);
     expect(JSON.parse(toolResultTexts(contexts[1])[0])).toMatchObject({
-      email: "collab@example.com", role: "use", actionId: record.id,
+      email: "collab@example.com", role: "build", actionId: record.id,
       status: "pendingOwnerApproval",
     });
-    expect(record.workspaceShare).toEqual({email: "collab@example.com", role: "use"});
+    expect(record.workspaceShare).toEqual({email: "collab@example.com", role: "build"});
     expect(h.collaborators).toEqual([]);
 
     let collaborator = await openAs(h.instance, COLLABORATOR_USER_ID);
@@ -419,7 +419,7 @@ describe("requestWorkspaceShare", () => {
 
     let owner = await openAs(h.instance, OWNER_USER_ID);
     await owner.approveAction(record.id);
-    expect(h.collaborators).toEqual([{username: "collab@example.com", role: "use"}]);
+    expect(h.collaborators).toEqual([{username: "collab@example.com", grant: "workspace"}]);
     expect(h.impl.storage.actions.get(record.id)).toMatchObject({ state: "approved" });
   }));
 

@@ -644,7 +644,9 @@ describe("GadgetEditor, showing a spawned agent's chat over the working chat", (
   it("keeps the agent's chat over the working chat when its worktree is picked", async () => {
     await openWith({ chat: WORKING_CHAT, agent: AGENT_CHAT, w: DRAFT.id }, DRAFT, AGENT_WORKTREE)
 
-    await act(async () => { container.querySelector<HTMLButtonElement>('button[title="Notes"]')!.click() })
+    // The pane's switcher lists every workpiece.
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label^="Switch output"]')!.click() })
+    await act(async () => { document.querySelector<HTMLElement>('[role="option"][title="Notes"]')!.click() })
 
     expect(lastNavigation()).toEqual({ chat: WORKING_CHAT, agent: AGENT_CHAT, w: AGENT_WORKTREE.id })
   })
@@ -928,7 +930,9 @@ describe('GadgetEditor, deleting a gadget', () => {
     vi.unstubAllGlobals()
   })
 
+  // The pane's switcher offers the menu on the open gadget.
   it('deletes the gadget once confirmed', async () => {
+    mocks.search = { w: 2 }
     await openWorkspace('trips', ['Itinerary', 'Packing'])
 
     await click('delete Packing')
@@ -938,7 +942,6 @@ describe('GadgetEditor, deleting a gadget', () => {
     expect(removed).toEqual(['trips:2'])
   })
 
-  // The pane names a lone gadget rather than tabbing it.
   it('offers the menu on the open gadget when it is the only one', async () => {
     await openWorkspace('trips', ['Itinerary'])
 
@@ -956,6 +959,7 @@ describe('GadgetEditor, deleting a gadget', () => {
   // Back, or a notification's "Open task", moves the editor to another workspace without
   // remounting it.
   it('drops a confirmation when the editor moves to another workspace', async () => {
+    mocks.search = { w: 2 }
     await openWorkspace('trips', ['Itinerary', 'Packing'])
     await click('delete Packing')
 

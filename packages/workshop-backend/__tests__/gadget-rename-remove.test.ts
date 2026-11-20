@@ -45,6 +45,7 @@ async function withImpl(fn: (impl: any, instance: OverseerDurableObject) => Prom
     // The user DOs open() and the approval paths reach: each answers with its own profile.
     impl.users = {
       idFromString: (id: string) => id,
+      idFromName: (name: string) => ({ toString: () => `${name}-do`, name }),
       get: (id: string) => {
         let profile = id === OWNER_USER_ID ? OWNER : COLLABORATOR;
         return {
@@ -60,7 +61,7 @@ async function withImpl(fn: (impl: any, instance: OverseerDurableObject) => Prom
     impl.syncOutputsTo = async () => {};
     // A non-owner opens as a "build" collaborator.
     impl.getSharingManager = async () => ({});
-    impl.authorizeCollaborator = async () => "build";
+    impl.authorizeCollaborator = async () => ({ role: "build" });
     await fn(impl, instance);
   });
 }
