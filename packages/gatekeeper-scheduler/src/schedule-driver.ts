@@ -680,7 +680,14 @@ export function toScheduleSummary(schedule: StoredSchedule): ScheduleSummary {
   const state = schedule.state;
   switch (state.status) {
     case "active":
-      return { ...common, status: "active", nextFire: state.nextFire };
+      return state.lastFailure
+        ? {
+            ...common,
+            status: "active",
+            nextFire: state.nextFire,
+            lastFailure: { failedAt: state.lastFailure.failedAt, failureCode: state.lastFailure.failureCode },
+          }
+        : { ...common, status: "active", nextFire: state.nextFire };
     case "pending":
       return { ...common, status: "active", nextFire: state.nextFire ?? state.scheduledTime };
     case "retrying":

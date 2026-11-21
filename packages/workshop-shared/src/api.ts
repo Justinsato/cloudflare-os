@@ -4478,9 +4478,10 @@ export type AgentScheduleInfo = {
    * failure code, with times as ISO 8601 strings. Absent for a disabled hook, or when the
    * gatekeeper reports nothing.
    */
-  status?: Omit<HookStatus, "nextRunAt" | "endedAt" | "occurrences"> & {
+  status?: Omit<HookStatus, "nextRunAt" | "endedAt" | "lastFailedAt" | "occurrences"> & {
     nextRunAt?: string;
     endedAt?: string;
+    lastFailedAt?: string;
     occurrences?: {count?: number, until?: string, used?: number};
   };
 

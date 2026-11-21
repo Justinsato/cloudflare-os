@@ -629,7 +629,7 @@ describe("ScheduleDriver", () => {
     expect((await testEnv.TEST_HOOKS.read()).events).toEqual([]);
   });
 
-  it("marks an abandoned eighth delivery attempt dead", async () => {
+  it("skips an abandoned eighth delivery attempt and keeps a recurring schedule", async () => {
     const driver = testEnv.SCHEDULE_DRIVER.getByName("recover-eighth-delivery");
     const activationTime = Date.now();
     await enableSchedule(
@@ -664,10 +664,8 @@ describe("ScheduleDriver", () => {
     await runDurableObjectAlarm(driver);
 
     expect((await driver.getSchedule("workspace-a", "schedule-a"))?.state).toMatchObject({
-      status: "dead",
-      runId: "exhausted-delivery",
-      attempts: 8,
-      failureCode: "callback_failed",
+      status: "active",
+      lastFailure: { runId: "exhausted-delivery", attempts: 8, failureCode: "callback_failed" },
     });
     expect((await testEnv.TEST_HOOKS.read()).events).toEqual([]);
   });
