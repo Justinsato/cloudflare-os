@@ -17473,10 +17473,11 @@ function hookRunInfo(entry: HookRunEntry): HookRunInfo {
 function agentHookStatus(status: HookStatus): NonNullable<AgentScheduleInfo["status"]> {
   let iso = (ms: number | undefined) =>
       typeof ms === "number" && Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
-  let {nextRunAt, endedAt, occurrences, ...rest} = status;
+  let {nextRunAt, endedAt, lastFailedAt, occurrences, ...rest} = status;
   let result: NonNullable<AgentScheduleInfo["status"]> = {...rest};
   if (iso(nextRunAt)) result.nextRunAt = iso(nextRunAt);
   if (iso(endedAt)) result.endedAt = iso(endedAt);
+  if (iso(lastFailedAt)) result.lastFailedAt = iso(lastFailedAt);
   if (occurrences) {
     let {until, ...bound} = occurrences;
     result.occurrences = {...bound, ...(iso(until) ? {until: iso(until)} : {})};

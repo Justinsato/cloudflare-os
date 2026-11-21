@@ -128,6 +128,8 @@ async function withHarness(fn: (h: Harness) => Promise<void>): Promise<void> {
         externalId: "sched-daily", state: "dead", cadence: "daily at 07:00",
         timeZone: "America/Chicago", endedAt: Date.UTC(2026, 9, 19, 12), failureCode:
             "callback_failed", occurrences: { count: 10, used: 3 },
+        // Every time the gatekeeper reports, a skipped run's included, lists as ISO 8601.
+        lastFailedAt: Date.UTC(2026, 9, 18, 12),
       })),
     };
     let hooks = new Map<number, FakeHook>();
@@ -281,6 +283,7 @@ describe("listSchedules", () => {
       status: {
         externalId: "sched-daily", state: "dead", cadence: "daily at 07:00",
         timeZone: "America/Chicago", endedAt: "2026-10-19T12:00:00.000Z",
+        lastFailedAt: "2026-10-18T12:00:00.000Z",
         failureCode: "callback_failed", occurrences: { count: 10, used: 3 },
       },
       lastRun: {
