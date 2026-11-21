@@ -41,9 +41,9 @@ const renderPage = async () => {
     subscribeConnectedAccounts: (subscriber: Subscriber, filter?: ConnectedAccountsFilter) => {
       filters.push(filter)
       if (filter?.includeForcedAutoProvisionedAccounts) {
-        subscriber.add(1, { displayName: 'Operator' }, vendor('PKM'), [], true, 'pkm')
+        subscriber.add(1, { displayName: 'Operator', avatar: { url: '' } }, vendor('PKM'), [], true, 'pkm')
       }
-      subscriber.add(2, { displayName: 'Alice' }, vendor('Notes'), [], true, 'notes')
+      subscriber.add(2, { displayName: 'Alice', avatar: { url: '' } }, vendor('Notes'), [], true, 'notes')
       subscriber.ready()
       return Object.assign(Promise.resolve(), { [Symbol.dispose]() {} })
     },
