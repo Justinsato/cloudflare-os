@@ -82,7 +82,7 @@ interface ConnectorCardProps {
   color?: string
   fallback: string
   name: string
-  badge?: { label: string; tone: 'new' | 'popular' }
+  badge?: { label: string; tone: 'new' | 'popular' | 'managed' }
   metaLine?: React.ReactNode
   tagline?: string
   state: 'connected' | 'available' | 'expired'
@@ -457,6 +457,11 @@ function ConnectorsPage() {
     return localStorage.getItem('gatekeepers-view') === 'list' ? 'list' : 'grid'
   })
   const [accounts, setAccounts] = useState<AccountEntry[]>([])
+  // Ids of accounts the user can manage and remove. Every other account in `accounts` is an ambient
+  // gatekeeper the admin turned on for everyone: shown so the page lists every gatekeeper in use,
+  // but it can't be disconnected (the backend refuses).
+  // Null until the removable-accounts subscription is ready, so no card is marked managed early.
+  const [removableIds, setRemovableIds] = useState<ReadonlySet<number> | null>(null)
   const [vendors, setVendors] = useState<VendorEntry[]>([])
   const [accountsLoaded, setAccountsLoaded] = useState(false)
   const [vendorsLoaded, setVendorsLoaded] = useState(false)
@@ -544,16 +549,46 @@ function ConnectorsPage() {
       },
     })
 
-    const subscription = authenticatedApi.subscribeConnectedAccounts(subscriber)
+    // All accounts, including admin-forced ambient ones (hidden from the plain subscription).
+    const subscription = authenticatedApi.subscribeConnectedAccounts(
+      subscriber, { includeForcedAutoProvisionedAccounts: true })
     subscription.catch((err) => {
       if (cancelled) return
       logRpcFailure('Failed to subscribe to connected accounts:', err)
       setLoadError(true)
     })
 
+    // The plain subscription lists exactly the accounts the user can remove.
+    const removable = new Set<number>()
+    let removableReady = false
+    const publishRemovable = () => {
+      if (!cancelled && removableReady) setRemovableIds(new Set(removable))
+    }
+    setRemovableIds(null)
+    const removableSubscriber = new AccountsSubscriberAdapter({
+      add({ id }) {
+        removable.add(id)
+        publishRemovable()
+      },
+      remove(id) {
+        removable.delete(id)
+        publishRemovable()
+      },
+      ready() {
+        removableReady = true
+        publishRemovable()
+      },
+    })
+    const removableSubscription =
+      authenticatedApi.subscribeConnectedAccounts(removableSubscriber)
+    removableSubscription.catch((err) => {
+      if (!cancelled) logRpcFailure('Failed to subscribe to removable accounts:', err)
+    })
+
     return () => {
       cancelled = true
       subscription[Symbol.dispose]()
+      removableSubscription[Symbol.dispose]()
     }
   }, [authenticatedApi])
 
@@ -786,9 +821,11 @@ function ConnectorsPage() {
                   account.accountDescription.uniqueName ??
                   'Connected'
                 const tagline = account.vendorDescription.tagline
+                const managed = removableIds !== null && !removableIds.has(account.id)
                 return (
                   <ConnectorCard
                     key={account.id}
+                    badge={managed ? { label: 'On for everyone', tone: 'managed' } : undefined}
                     logoUrl={account.vendorDescription.logo?.url}
                     color={account.vendorDescription.color}
                     fallback={account.vendorDescription.displayName}
@@ -882,7 +919,11 @@ function ConnectorsPage() {
           onEnsureResources={handleEnsureResources}
           ensuringResourceTypeIds={ensuringResourceTypeIds}
           disconnecting={disconnecting}
-          onDisconnect={handleDisconnect}
+          onDisconnect={
+            activeAccount && removableIds !== null && !removableIds.has(activeAccount.id)
+              ? undefined
+              : handleDisconnect
+          }
           onOpenChange={(open) => {
             if (!open && !connecting && !disconnecting) handleCloseModal()
           }}
