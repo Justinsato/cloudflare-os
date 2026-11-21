@@ -99,12 +99,35 @@ describe("schedule state", () => {
       state = failRun(state, runId, "callback_failed", attempt * 100);
       if (attempt < MAX_ATTEMPTS) expect(state.status).toBe("retrying");
     }
+    // A recurring schedule skips the exhausted run and keeps its cadence.
     expect(state).toMatchObject({
-      status: "dead",
-      attempts: MAX_ATTEMPTS,
-      failureCode: "callback_failed",
-      failedAt: 800,
+      status: "active",
+      nextFire: 60_000,
+      lastFailure: { runId: "run-1", attempts: MAX_ATTEMPTS, failureCode: "callback_failed", failedAt: 800 },
     });
+  });
+
+  it("marks a one-shot dead when its retries exhaust", () => {
+    let state = createSchedule(oneShot, 0);
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      state = beginDueRun(state, alarmTime(state), "once-run", 10_000 + attempt);
+      state = admitRun(state, "once-run", 120_000 + attempt * 10, 200_000 + attempt);
+      state = failRun(state, "once-run", "authorization_failed", 120_000 + attempt * 100);
+    }
+    expect(state).toMatchObject({ status: "dead", attempts: MAX_ATTEMPTS, failureCode: "authorization_failed" });
+  });
+
+  it("clears a skipped run's failure once the next run starts", () => {
+    let state = createSchedule(recurring, 0);
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      state = beginDueRun(state, alarmTime(state), "run-1", 10_000 + attempt);
+      state = admitRun(state, "run-1", attempt * 10, 20_000 + attempt);
+      state = failRun(state, "run-1", "callback_failed", attempt * 100);
+    }
+    expect(state).toMatchObject({ status: "active", lastFailure: { runId: "run-1" } });
+    const next = beginDueRun(state, 60_000, "run-2", 400_000);
+    expect(next).toMatchObject({ status: "pending", runId: "run-2" });
+    expect("lastFailure" in next).toBe(false);
   });
 
   it("completes recurring and one-shot runs into their appropriate states", () => {
