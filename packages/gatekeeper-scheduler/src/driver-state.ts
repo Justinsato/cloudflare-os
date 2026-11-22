@@ -22,10 +22,20 @@ type ScheduleProgress = ScheduleRegistration & {
   occurrenceCount?: number;
 };
 
+/** A recurring run that exhausted its attempts and was skipped so the next occurrence still fires. */
+export type SkippedRun = {
+  runId: string;
+  attempts: number;
+  failedAt: number;
+  failureCode: "authorization_failed" | "callback_failed";
+};
+
 /** An enabled schedule waiting for its next occurrence. */
 export type ActiveSchedule = ScheduleProgress & {
   status: "active";
   nextFire: number;
+  /** The last run that exhausted its attempts, kept until the next run starts. */
+  lastFailure?: SkippedRun;
 };
 
 /** A one-shot whose firing instant passed without delivery. */
@@ -162,7 +172,12 @@ export function rejectRun(
     : { ...common, status: "active", nextFire };
 }
 
-/** Schedules a callback retry or marks an exhausted logical run dead. */
+/**
+ * Schedules a callback retry, or ends an exhausted logical run. A recurring schedule with another
+ * occurrence skips the exhausted run and stays active with `lastFailure`, so one bad window (a
+ * platform limit, a deploy, an outage) never stops a daily or weekly job for good. A one-shot, or a
+ * bounded recurrence with nothing left, is marked dead.
+ */
 export function failRun(
   schedule: EnabledSchedule,
   runId: string,
@@ -171,6 +186,15 @@ export function failRun(
 ): EnabledSchedule {
   if (!isPending(schedule, runId, "delivery")) return schedule;
   if (schedule.attempts >= MAX_ATTEMPTS) {
+    const nextFire = recurringNextFire(schedule, failedAt);
+    if (nextFire !== undefined) {
+      return {
+        ...copyProgress(schedule),
+        status: "active",
+        nextFire,
+        lastFailure: { runId, attempts: schedule.attempts, failedAt, failureCode },
+      };
+    }
     return {
       ...copyProgress(schedule),
       status: "dead",

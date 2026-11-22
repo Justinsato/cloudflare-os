@@ -251,6 +251,10 @@ export async function describeScheduleController(
     case "active":
       if (summary.nextFire !== undefined) status.nextRunAt = summary.nextFire;
       if (summary.retrying) status.retrying = true;
+      if (summary.lastFailure) {
+        status.lastFailedAt = summary.lastFailure.failedAt;
+        status.failureCode = summary.lastFailure.failureCode;
+      }
       break;
     case "dead":
       status.endedAt = summary.failedAt;

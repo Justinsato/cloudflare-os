@@ -2057,6 +2057,12 @@ export type HookStatus = {
   /** Fixed, non-sensitive failure stage code, e.g. "callback_failed". */
   failureCode?: string;
 
+  /**
+   * On an "active" recurring schedule: the last run exhausted its retries and was skipped, at this
+   * time, with `failureCode`. The schedule still runs at `nextRunAt`.
+   */
+  lastFailedAt?: number;
+
   /** A finite bound on runs, and how much of it is used. */
   occurrences?: {count?: number, until?: number, used?: number};
 };

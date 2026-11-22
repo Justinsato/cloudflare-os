@@ -218,6 +218,14 @@ export type ScheduleSummary = {
       nextFire?: number;
       /** Set when `nextFire` is a retry of a failed attempt, not a new occurrence. */
       retrying?: true;
+      /**
+       * Set when the last run exhausted its retries and was skipped: the schedule goes on at
+       * `nextFire`. Cleared when the next run starts.
+       */
+      lastFailure?: {
+        failedAt: number;
+        failureCode: "authorization_failed" | "callback_failed";
+      };
     }
   | {
       /** Callback delivery exhausted its retry budget. */
